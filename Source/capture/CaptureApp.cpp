@@ -190,15 +190,15 @@ public:
 
         // --- audio input
         std::unique_ptr<XmlElement> saved (props->getXmlValue ("audio"));
-        if (saved == nullptr) {
-           #if JUCE_WINDOWS
-            // exclusive mode bypasses the Windows mixer (no resampling, no effects)
-            deviceManager.setCurrentAudioDeviceType ("Windows Audio (Exclusive Mode)", false);
-           #endif
-        }
-        trace ("audio: initialising (type " + deviceManager.getCurrentAudioDeviceType() + ")");
         const auto audioErr = deviceManager.initialise (2, 0, saved.get(), true);
-        trace ("audio: initialised; device=" + (deviceManager.getCurrentAudioDevice() ? deviceManager.getCurrentAudioDevice()->getName() : String ("none"))
+       #if JUCE_WINDOWS
+        if (saved == nullptr) {
+            // first run: exclusive mode bypasses the Windows mixer (no resampling, no effects)
+            for (auto* t : deviceManager.getAvailableDeviceTypes())
+                if (t->getTypeName() == "Windows Audio (Exclusive Mode)") { deviceManager.setCurrentAudioDeviceType (t->getTypeName(), true); break; }
+        }
+       #endif
+        trace ("audio: type=" + deviceManager.getCurrentAudioDeviceType() + " device=" + (deviceManager.getCurrentAudioDevice() ? deviceManager.getCurrentAudioDevice()->getName() : String ("none"))
                + (audioErr.isNotEmpty() ? " error=" + audioErr : String()));
         deviceManager.addAudioCallback (this);
         deviceManager.addChangeListener (this);

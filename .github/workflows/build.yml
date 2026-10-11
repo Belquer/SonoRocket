@@ -148,6 +148,41 @@ jobs:
           name: SonoRocket-windows
           path: dist/*.zip
 
+      # Smoke test on real Windows: launch the packaged app, wait for the public
+      # link, screenshot the window, keep the logs. Informational: never blocks a release.
+      - name: Smoke test (screenshot + logs)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "smoke"
+          Expand-Archive dist/SonoRocket-windows.zip -DestinationPath $dir -Force
+          $app = Start-Process -FilePath (Join-Path $dir "SonoRocket\SonoRocket.exe") -PassThru
+          $status = ""
+          for ($i = 0; $i -lt 45; $i++) {
+            Start-Sleep -Seconds 1
+            try { $status = (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080/status -TimeoutSec 2).Content } catch {}
+            if ($status -match '"tunnel":"up"') { break }
+          }
+          Start-Sleep -Seconds 3
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          New-Item -ItemType Directory -Force smoke | Out-Null
+          $bmp.Save("smoke/screen.png")
+          $status | Out-File smoke/status.json
+          Get-Process | Where-Object { $_.Name -match "SonoRocket|rocket-relay|cloudflared" } | Format-Table Name, Id | Out-File smoke/processes.txt
+          Copy-Item "$env:APPDATA\SonoRocket\*.log" smoke/ -ErrorAction SilentlyContinue
+          Stop-Process -Id $app.Id -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+          Get-Process | Where-Object { $_.Name -match "rocket-relay|cloudflared" } | Format-Table Name, Id | Out-File smoke/after-quit.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-smoke
+          path: smoke/
+
   # Each green build on main becomes the latest release, so these links always serve the newest:
   #   https://github.com/Belquer/SonoRocket/releases/latest/download/SonoRocket-windows.zip
   #   https://github.com/Belquer/SonoRocket/releases/latest/download/SonoRocket-mac.zip
