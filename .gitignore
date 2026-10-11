@@ -4,3 +4,7 @@ build32
 buildXcode
 release/1.*
 mobile/Builds
+build/
+sonorocket/relay/node_modules/
+sonorocket/test/build/
+sonorocket/test/host/build/

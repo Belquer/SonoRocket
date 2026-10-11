@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.15)
+project(RocketHostTest VERSION 0.1.0)
+add_subdirectory(../../../deps/juce juce)
+juce_add_console_app(rocket_host PRODUCT_NAME "rocket_host")
+target_sources(rocket_host PRIVATE host.cpp)
+target_compile_definitions(rocket_host PRIVATE JUCE_PLUGINHOST_VST3=1 JUCE_MODAL_LOOPS_PERMITTED=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(rocket_host PRIVATE juce::juce_audio_processors juce::juce_recommended_config_flags)

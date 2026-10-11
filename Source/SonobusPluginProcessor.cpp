@@ -93,6 +93,12 @@ static String defRecordBitsKey("DefaultRecordingBitsPerSample");
 static String recordSelfPreFxKey("RecordSelfPreFx");
 static String recordSelfSilenceMutedKey("RecordSelfSilenceWhenMuted");
 static String recordFinishOpenKey("RecordFinishOpen");
+static String rocketHostKey("RocketHost");
+static String rocketPortKey("RocketPort");
+static String rocketRoomKey("RocketRoom");
+static String rocketKeyKey("RocketKey");
+static String rocketEnabledKey("RocketEnabled");
+static String rocketListenUrlKey("RocketListenUrl");
 static String defRecordDirKey("DefaultRecordDir");
 static String defRecordDirURLKey("DefaultRecordDirURL");
 static String lastBrowseDirKey("LastBrowseDir");
@@ -773,6 +779,7 @@ mState (*this, &mUndoManager, "SonoBusAoO",
 
 
     initFormats();
+    mRocket = std::make_unique<SonoRocket::RocketStreamer>();
     
     mDefaultAutoNetbufModeParam = mState.getParameter(paramDefaultAutoNetbuf);
     mDefaultAudioFormatParam = mState.getParameter(paramDefaultSendQual);
@@ -791,6 +798,7 @@ mState (*this, &mUndoManager, "SonoBusAoO",
     }
 
     mState.getParameter(paramDry)->setValue(mDry.get());
+    mLastDry = mDry.get(); // SonoRocket: no fade-in ramp on the master pass-through
     mState.getParameter(paramMainSendMute)->setValue(mMainSendMute.get() ? 1.0f : 0.0f);
     mState.getParameter(paramMainRecvMute)->setValue(mMainRecvMute.get() ? 1.0f : 0.0f);
     mState.getParameter(paramSendChannels)->setValue(mState.getParameter(paramSendChannels)->convertTo0to1(mSendChannels.get()));
@@ -6920,6 +6928,8 @@ void SonobusAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBloc
     DBG("Prepare to play: SR " <<  sampleRate << "  prevrate: " << mPrevSampleRate <<  "  blocksize: " <<  samplesPerBlock << "  totinch: " << getTotalNumInputChannels() << "  mbinch: " << getMainBusNumInputChannels() << "  outch: " << getMainBusNumOutputChannels());
     DBG("  numinbuses: " << getBusCount(true) << "  numoutbuses: " << getBusCount(false));
 
+    if (mRocket) mRocket->prepare(sampleRate, jlimit(1, 2, getMainBusNumInputChannels() > 0 ? getMainBusNumInputChannels() : 2));
+
     const ScopedReadLock sl (mCoreLock);        
     
     mMetronome->setSampleRate(sampleRate);
@@ -7339,6 +7349,11 @@ void SonobusAudioProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer
     auto mainBusOutputChannels = getMainBusNumOutputChannels();
 
     auto totalOutputChannels = getTotalNumOutputChannels();
+
+    // SonoRocket: tap the raw input (the DAW master) before SonoBus touches it.
+    if (mRocket && mainBusInputChannels > 0) {
+        mRocket->pushAudio(buffer.getArrayOfReadPointers(), jmin(2, mainBusInputChannels), buffer.getNumSamples());
+    }
 
     auto maxchans = jmax(2, jmax(totalInputChannels, mainBusOutputChannels));
     auto maxsendchans = jmax(2, jmax(totalInputChannels, mainBusOutputChannels));
@@ -8524,6 +8539,15 @@ void SonobusAudioProcessor::getStateInformationWithOptions(MemoryBlock& destData
     extraTree.setProperty(recordSelfPreFxKey, mRecordInputPreFX, nullptr);
     extraTree.setProperty(recordSelfSilenceMutedKey, mRecordInputSilenceWhenMuted, nullptr);
     extraTree.setProperty(recordFinishOpenKey, mRecordFinishOpens, nullptr);
+    if (mRocket) {
+        auto rc = mRocket->getConfig();
+        extraTree.setProperty(rocketHostKey, rc.host, nullptr);
+        extraTree.setProperty(rocketPortKey, rc.port, nullptr);
+        extraTree.setProperty(rocketRoomKey, rc.room, nullptr);
+        extraTree.setProperty(rocketKeyKey, rc.key, nullptr);
+        extraTree.setProperty(rocketEnabledKey, rc.enabled, nullptr);
+        extraTree.setProperty(rocketListenUrlKey, rc.listenUrl, nullptr);
+    }
 
     if (mDefaultRecordDir.isLocalFile()) {
         // backwards compat
@@ -8672,6 +8696,17 @@ void SonobusAudioProcessor::setStateInformationWithOptions (const void* data, in
 
 
             setRecordFinishOpens(extraTree.getProperty(recordFinishOpenKey, mRecordFinishOpens));
+
+            if (mRocket) {
+                auto rc = mRocket->getConfig();
+                rc.host = extraTree.getProperty(rocketHostKey, rc.host).toString();
+                rc.port = extraTree.getProperty(rocketPortKey, rc.port);
+                rc.room = extraTree.getProperty(rocketRoomKey, rc.room).toString();
+                rc.key = extraTree.getProperty(rocketKeyKey, rc.key).toString();
+                rc.enabled = extraTree.getProperty(rocketEnabledKey, rc.enabled);
+                rc.listenUrl = extraTree.getProperty(rocketListenUrlKey, rc.listenUrl).toString();
+                mRocket->setConfig(rc);
+            }
 
 
 #if !(JUCE_IOS)

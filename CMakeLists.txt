@@ -325,6 +325,10 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
         Source/SonobusPluginEditor.cpp
         Source/SonobusPluginEditor.h
         Source/SonobusPluginProcessor.cpp
+        Source/RocketStreamer.cpp
+        Source/RocketStreamer.h
+        Source/RocketView.cpp
+        Source/RocketView.h
         Source/SonobusPluginProcessor.h
         Source/SonobusTypes.h
         Source/SuggestNewGroupView.cpp
@@ -590,7 +594,7 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
      
        if (TARGET ${target_name}_Standalone)
            # make linux executable all lower case
-           string(TOLOWER ${target_name} tmptargname)
+           string(TOLOWER ${product_name} tmptargname)
 
            set_target_properties("${target_name}_Standalone"
 	     PROPERTIES

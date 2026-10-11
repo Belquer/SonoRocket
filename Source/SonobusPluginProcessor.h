@@ -21,6 +21,7 @@
 #include "zitaRev.h"
 
 #include "SoundboardChannelProcessor.h"
+#include "RocketStreamer.h"
 
 typedef MVerb<float> MVerbFloat;
 
@@ -116,6 +117,9 @@ inline bool operator<(const AooServerConnectionInfo& lhs, const AooServerConnect
 class SonobusAudioProcessor  : public AudioProcessor, public AudioProcessorValueTreeState::Listener, public ChangeListener
 {
 public:
+    // SonoRocket browser streaming
+    SonoRocket::RocketStreamer& getRocket() { return *mRocket; }
+
     //==============================================================================
     SonobusAudioProcessor();
     ~SonobusAudioProcessor();
@@ -1250,6 +1254,7 @@ private:
 
     // metronome
     std::unique_ptr<SonoAudio::Metronome> mMetronome;
+    std::unique_ptr<SonoRocket::RocketStreamer> mRocket; // SonoRocket: lossless browser streaming of the input
    
     // misc
     bool mSliderSnapToMouse = true;

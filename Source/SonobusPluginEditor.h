@@ -24,6 +24,7 @@
 #include "OptionsView.h"
 #include "ReverbView.h"
 #include "VDONinjaView.h"
+#include "RocketView.h"
 
 class RandomSentenceGenerator;
 class WaveformTransportComponent;
@@ -295,6 +296,10 @@ private:
     
     std::unique_ptr<TextButton> mPatchbayButton;
     std::unique_ptr<SonoDrawableButton> mSettingsButton;
+    std::unique_ptr<TextButton> mRocketButton; // SonoRocket
+    std::unique_ptr<RocketView> mRocketView;
+    WeakReference<Component> rocketCalloutBox;
+    void showRocketView(bool show);
     std::unique_ptr<SonoDrawableButton> mMainLinkButton;
     std::unique_ptr<Drawable> mMainLinkArrow;
 

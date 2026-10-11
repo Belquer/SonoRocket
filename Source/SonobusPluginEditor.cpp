@@ -781,6 +781,13 @@ SonobusAudioProcessorEditor::SonobusAudioProcessorEditor (SonobusAudioProcessor&
     mSettingsButton->setAlpha(0.7);
     mSettingsButton->addMouseListener(this, false);
 
+    // SonoRocket: browser streaming panel
+    mRocketButton = std::make_unique<TextButton>("Rocket");
+    mRocketButton->setTitle(TRANS("SonoRocket browser streaming"));
+    mRocketButton->setColour(TextButton::buttonColourId, Colour(0xffff5a1f));
+    mRocketButton->setColour(TextButton::textColourOffId, Colours::black);
+    mRocketButton->onClick = [this] { showRocketView(rocketCalloutBox == nullptr); };
+
     mMainLinkButton = std::make_unique<SonoDrawableButton>("link",  DrawableButton::ButtonStyle::ImageOnButtonBackground);
     mMainLinkButton->setTitle(TRANS("Group Action Menu"));
     mMainLinkButton->addListener(this);
@@ -1180,6 +1187,7 @@ SonobusAudioProcessorEditor::SonobusAudioProcessorEditor (SonobusAudioProcessor&
 
     mTopLevelContainer->addAndMakeVisible(mPatchbayButton.get());
     mTopLevelContainer->addAndMakeVisible (mSettingsButton.get());
+    mTopLevelContainer->addAndMakeVisible (mRocketButton.get());
     mTopLevelContainer->addAndMakeVisible(mConnectButton.get());
     mTopLevelContainer->addChildComponent(mAltConnectButton.get());
     mTopLevelContainer->addChildComponent(mVideoButton.get());
@@ -3077,6 +3085,34 @@ void SonobusAudioProcessorEditor::showLatencyMatchView(bool show)
     }
 }
 
+void SonobusAudioProcessorEditor::showRocketView(bool show)
+{
+    if (show && rocketCalloutBox == nullptr) {
+        auto wrap = std::make_unique<Viewport>();
+        Component* dw = this;
+        if (!mRocketView) {
+            mRocketView = std::make_unique<RocketView>(processor);
+        }
+        const int w = jmin(440, dw->getWidth() - 10);
+        const int h = mRocketView->getPreferredHeight();
+        mRocketView->setBounds(0, 0, w, h);
+        wrap->setViewedComponent(mRocketView.get(), false);
+        mRocketView->setVisible(true);
+        wrap->setSize(w, jmin(h, dw->getHeight() - 24));
+        Rectangle<int> bounds = dw->getLocalArea(nullptr, mRocketButton->getScreenBounds());
+        rocketCalloutBox = & CallOutBox::launchAsynchronously(std::move(wrap), bounds, dw, false);
+        if (CallOutBox * box = dynamic_cast<CallOutBox*>(rocketCalloutBox.get())) {
+            box->setDismissalMouseClicksAreAlwaysConsumed(true);
+        }
+    }
+    else if (!show) {
+        if (CallOutBox * box = dynamic_cast<CallOutBox*>(rocketCalloutBox.get())) {
+            box->dismiss();
+            rocketCalloutBox = nullptr;
+        }
+    }
+}
+
 void SonobusAudioProcessorEditor::showVDONinjaView(bool show, bool fromVideoButton)
 {
     if (show && vdoninjaViewCalloutBox == nullptr) {
@@ -4806,6 +4842,7 @@ void SonobusAudioProcessorEditor::updateLayout()
     titleBox.items.clear();
     titleBox.flexDirection = FlexBox::Direction::row;
     titleBox.items.add(FlexItem(2, 20).withMargin(1).withFlex(0));
+    titleBox.items.add(FlexItem(64, minitemheight - 12, *mRocketButton).withMargin(FlexItem::Margin(3, 4, 3, 2)).withFlex(0));
     titleBox.items.add(FlexItem(minitemheight - 8, minitemheight - 12, *mSettingsButton).withMargin(1).withMaxWidth(44).withFlex(0));
     titleBox.items.add(FlexItem(86, 20, *mTitleLabel).withMargin(1).withFlex(0));
     if (iaaConnected) {

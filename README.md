@@ -1,128 +1,71 @@
+# SonoRocket
 
-# SonoBus
+Stream the master of any DAW, sample-exact, to any browser: iPhone, Android, Mac, Windows, Linux.
+Made for remote mix reviews, where the producer plays the session and the listener hears exactly what leaves the master bus, with no codec, no resampling, no dither and no conferencing-app processing.
 
-SonoBus is an easy to use application for streaming high-quality, low-latency peer-to-peer audio between devices over the internet or a local network.
-
-Simply choose a unique group name (with optional password), and instantly connect multiple people together to make music, remote sessions, podcasts, etc. Easily record the audio from everyone, as well as playback any audio content to the whole group.
-
-Connects multiple users together to send and receive audio among all in a group, with fine-grained control over latency, quality and overall mix. Includes optional input compression, noise gate, and EQ effects, along with a master reverb. All settings are dynamic, network statistics are clearly visible.
-
-Works as a standalone application on macOS, Windows, iOS, and Linux, and as an audio plugin (AU, VST) on macOS and Windows. Use it on your desktop or in your DAW, or on your mobile device.
-
-Easy to setup and use, yet still provides all the details that audio nerds want to see. Audio quality can be instantly adjusted from full uncompressed PCM (16, 24, or 32 bit) or with various compressed bitrates (16-256 kbps per channel) using the low-latency Opus codec, and you can do this independently for any of the users you are connected with in a group.
-
-
-<img src="https://sonobus.net/assets/images/sonobus_screenshot.png" width="871" />
-
-**IMPORTANT TIPS**
-
-SonoBus does not use any echo cancellation, or automatic noise
-reduction in order to maintain the highest audio quality. As a result, if you have a live microphone signal you will need to also use headphones to prevent echos and/or feedback.
-
-For best results, and to achieve the lowest latencies, connect your computer with wired ethernet to your router if you can. Although it will work with WiFi, the added network jitter and packet loss will require you to use a bigger safety buffer to maintain a quality audio signal, which results in higher latencies.
-
-SonoBus does NOT currently use any encryption for the data
-communication, so while it is unlikely that it will be
-intercepted, please keep that in mind. All audio is sent directly between users peer-to-peer, the connection server is only used so that the users in a group can find each other.
-
-
-
-# Installing
-
-## Windows and Mac
-There are binary releases for macOS and Windows available at [sonobus.net](https://sonobus.net) or in the releases of this repository on GitHub.
-
-## Linux
-
-There are packages available for Debian-based Linux distributions as well as a Snap package. See installation instructions at [sonobus.net/linux.html](https://sonobus.net/linux.html).
-
-Or if you prefer, you can build it yourself following the [build instructions](#on-linux) below.
-
-# Building
-
-The original GitHub repository for this project is at
-[github.com/sonosaurus/sonobus](https://github.com/sonosaurus/sonobus).
-
-To build from source on macOS and Windows, all of the dependencies are a part of this GIT repository, including prebuilt Opus libraries. 
-The build now uses [CMake](https://cmake.org) 3.15 or above on macOS, Windows, and Linux platforms, see
-details below.
-
-### On macOS
-
-Make sure you have [CMake](https://cmake.org) >= 3.15 and XCode. Then run:
-```
-./setupcmake.sh
-./buildcmake.sh
-``` 
-The resulting application and plugins will end up under `build/SonoBus_artefacts/Release`
-when the build completes. If you would rather have an Xcode project to look
-at, use `./setupcmakexcode.sh` instead and use the Xcode project that gets
-produced at `buildXcode/SonoBus.xcodeproj`.
-
-### On Windows
-
-You will need [CMake](https://cmake.org) >= 3.15, and  Visual Studio 2017
-installed. You'll also need Cygwin installed if you want to use the scripts
-below, but you can also use CMake in other ways if you prefer.
+SonoRocket is a fork of [SonoBus](https://github.com/sonosaurus/sonobus) (GPLv3) by Jesse Chappell. Everything SonoBus does (peer-to-peer network audio between DAWs) still works; SonoRocket adds a browser path and retunes the defaults for fidelity over latency.
 
 ```
-./setupcmakewin.sh
-./buildcmake.sh
-``` 
-The resulting application and plugins will end up under `build/SonoBus_artefacts/Release`
-when the build completes. The MSVC project/solution can be found in
-build/SonoBus_artefacts as well after the cmake setup step.
+ DAW master ──► SonoRocket plugin ──TCP──► relay ──WebSocket──► any browser
+ (VST3/AU/AAX/LV2,                         (Node)                (AudioWorklet,
+  or standalone + loopback)                                       2 s+ buffer)
+```
 
+## What "exact" means here
 
-### On Linux
+| Stage | What happens to the samples |
+|---|---|
+| Plugin | Taps the input buffer before any SonoBus processing; copies raw float32 bits into a lock-free FIFO |
+| Network | TCP, so nothing is lost or reordered; a 20 s FIFO rides out network stalls |
+| Relay | Forwards payloads byte-for-byte; never decodes |
+| Browser | CRC32 checks every block; the worklet plays samples as-is (no interpolation, no gain). Underruns rebuffer with silence; nothing is stretched or concealed |
 
-The first thing to do in a terminal is go to the Linux directory:
+The page shows a green **"integridade: bit a bit ✓"** while every block matches.
+The one stage outside our control is the listener's device. If the phone's hardware runs at a different rate than the stream, the browser resamples on output, and the page says so ("browser reamostra").
 
-    cd linux
+Verified in this repo (`sonorocket/test`): the real VST3, loaded in a headless host and fed overs above 0 dBFS, denormals and values below the 24-bit floor in varying block sizes, arrives at the listener with **0 sample mismatches**.
 
-And read the [BUILDING.md](linux/BUILDING.md) file for
-further instructions.
+## Quick start (no server: relay on the producer's Mac)
 
+1. Install the plugin; put **SonoRocket** as the last insert on the master.
+2. On the same machine: `brew install cloudflared node`, then `sonorocket/relay/start-with-tunnel.sh mix-luciano`.
+3. In the plugin, click **Rocket**: Relay `127.0.0.1`, Port `9100`, Room `mix-luciano`, Listen URL = the `trycloudflare.com` address printed by the script. Click **Start streaming**.
+4. Send the link (**Copy listener link**). The listener opens it and taps **Ouvir**.
 
-# License and 3rd Party Software
+Talk over Meet/WhatsApp as usual with the conferencing app's audio muted on your music output, or keep calling on a separate device. The browser stream runs ~2 s behind, so refer to timecode or bar numbers.
 
-SonoBus was written by Jesse Chappell, and it is licensed under the GPLv3, the full license text is in the LICENSE file. Some of the dependencies have their own more permissive licenses.
+## Relay on a server (always-on link)
 
-It is built using JUCE 6 (slightly modified on a public fork), and AOO (Audio over OSC), which also uses the Opus codec. I'm using the very handy tool `git-subrepo` to include the source code for my forks of those software libraries in this repository.
+```
+cd sonorocket/relay && npm install
+RELAY_KEY=some-long-secret SENDER_PORT=9100 HTTP_PORT=8080 node server.js
+```
 
+Put HTTPS in front of port 8080 (Caddy, nginx or a Cloudflare tunnel). Browsers need HTTPS for AudioWorklet everywhere except `localhost`. Open TCP 9100 for senders and put the same key in the plugin.
 
-My github forks of these that are referenced via `git-subrepo` in this repository are:
+## Plugin defaults (vs. SonoBus)
 
-> https://github.com/essej/JUCE  in the sono6good branch.
+* Browser stream: float32, the host's native sample rate, stereo.
+* Peer (SonoBus) path: PCM 32-bit float, send channels match the input, fixed 2 s jitter buffer (max 8 s), auto-resize off, dynamic resampling off, 8 s retransmit window.
+* Plugin instance: receive muted, so nothing from the network can leak into a bounce. Standalone: send muted, so it acts as a listener.
 
-> https://github.com/essej/aoo.git   in the sono branch.
+## Building
 
+Same as SonoBus (see `README-SonoBus.md`); the plugin JUCE is `deps/juce`.
 
-If you want to run your own connection server instead of using the default
-one at aoo.sonobus.net, you can build the headless aooserver code at
+```
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release            # VST3, AU (mac), LV2 (linux), Standalone
+cmake -S . -B build -DAAX_SDK_PATH=/path/to/aax-sdk ...             # + AAX
+```
 
-> https://github.com/essej/aooserver
+**Pro Tools.** It loads AAX only, and release Pro Tools only loads PACE-signed AAX. That requires an Avid developer account and PACE's signing tools (free for developers, but approval takes time). Until then, host `SonoRocket.vst3` inside Blue Cat PatchWork (AAX) on the master. Check the AAX SDK's license terms against GPLv3 before distributing AAX binaries.
 
-The standalone SonoBus application also provides a connection server internally,
-which you can connect to on port 10999, or port forward TCP/UDP 10999 from your internet
-router to the machine you are running it on.
+**Any app, not just DAWs.** Run the SonoRocket standalone with a loopback device (BlackHole on macOS, VB-Cable on Windows, PipeWire on Linux) as its input.
 
+## Protocol
 
-# Thanks
+`sonorocket/PROTOCOL.md`. Test tools: `sonorocket/tools/send-test.js` (stream a test signal or a WAV) and `listen-verify.js` (headless bit-for-bit check).
 
-Thanks for everyone involved in testing, especially to Christof Ressi for
-the AOO library.
+## License
 
-### Software development credits:
-
-- For designing and implementing the Soundboard feature:
-    - Sten Wessel
-    - Hannah Schellekens
-
-### Documentation credits:
- - Michael Eskin
- - Tony Becker
-
-### Translation credits:
- - RelationLife (Taewook Yang)
- 
+GPLv3 with the SonoBus app-store exception (`LICENSE`, `LICENSE_EXCEPTION`). Source must stay available.
