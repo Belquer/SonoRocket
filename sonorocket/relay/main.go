@@ -26,6 +26,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -182,7 +183,11 @@ func findCloudflared() string {
 		return *tunnelMode
 	}
 	if exe, err := os.Executable(); err == nil {
-		p := filepath.Join(filepath.Dir(exe), "cloudflared")
+		name := "cloudflared"
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		p := filepath.Join(filepath.Dir(exe), name)
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}

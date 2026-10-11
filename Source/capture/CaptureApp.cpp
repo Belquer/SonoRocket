@@ -29,6 +29,12 @@ static const Colour kBg (0xff0b0b0c), kPanel (0xff151517), kLine (0xff26262a), k
 
 static String u8 (const char* s) { return String::fromUTF8 (s); }
 
+// app.log next to the settings: what happened, for remote support ("me manda o app.log")
+static void trace (const String& msg)
+{
+    if (auto* l = Logger::getCurrentLogger()) l->writeToLog (Time::getCurrentTime().toString (false, true, true, true) + "  " + msg);
+}
+
 //==============================================================================
 // Owns the relay process: starts it (unless one is already running), polls /status,
 // and asks it to quit on exit. The relay also watches our PID, so a crash never
@@ -95,8 +101,9 @@ private:
         StringArray args { relay.getFullPathName(), "-http", "127.0.0.1:8080", "-room", roomName,
                            "-parent-pid", String (currentPid()), "-log", log.getFullPathName() };
         process = std::make_unique<ChildProcess>();
+        trace ("relay: launching " + relay.getFullPathName());
         if (process->start (args, 0)) weStartedIt = true;
-        else setError ("não consegui iniciar o relay");
+        else { trace ("relay: launch FAILED"); setError (u8 ("não consegui iniciar o relay")); }
     }
 
     void setError (const String& e) { const ScopedLock sl (lock); status.error = e; }
@@ -173,6 +180,9 @@ public:
        #endif
         o.osxLibrarySubFolder = "Application Support";
         props = std::make_unique<PropertiesFile> (o);
+        fileLogger.reset (new FileLogger (props->getFile().getSiblingFile ("app.log"), "SonoRocket " SONOROCKET_VERSION));
+        Logger::setCurrentLogger (fileLogger.get());
+        trace ("settings: " + props->getFile().getFullPathName());
 
         // stable room per computer: the listener link stays predictable
         if (props->getValue ("room").isEmpty())
@@ -186,7 +196,10 @@ public:
             deviceManager.setCurrentAudioDeviceType ("Windows Audio (Exclusive Mode)", false);
            #endif
         }
-        deviceManager.initialise (2, 0, saved.get(), true);
+        trace ("audio: initialising (type " + deviceManager.getCurrentAudioDeviceType() + ")");
+        const auto audioErr = deviceManager.initialise (2, 0, saved.get(), true);
+        trace ("audio: initialised; device=" + (deviceManager.getCurrentAudioDevice() ? deviceManager.getCurrentAudioDevice()->getName() : String ("none"))
+               + (audioErr.isNotEmpty() ? " error=" + audioErr : String()));
         deviceManager.addAudioCallback (this);
         deviceManager.addChangeListener (this);
 
@@ -261,15 +274,18 @@ public:
 
         setSize (560, 720);
         startTimerHz (10);
+        trace ("ui: ready");
     }
 
     ~MainComponent() override
     {
+        trace ("quit");
         stopTimer();
         deviceManager.removeAudioCallback (this);
         deviceManager.removeChangeListener (this);
         saveAudioState();
         relay.stop();
+        Logger::setCurrentLogger (nullptr);
     }
 
     void paint (Graphics& g) override
@@ -331,6 +347,7 @@ private:
     void audioDeviceAboutToStart (AudioIODevice* d) override
     {
         const int chans = jlimit (1, 2, d->getActiveInputChannels().countNumberOfSetBits());
+        trace ("audio: started " + d->getName() + " @ " + String (d->getCurrentSampleRate()) + " Hz, " + String (chans) + " ch");
         streamer.prepare (d->getCurrentSampleRate(), chans);
         sampleRate = d->getCurrentSampleRate();
     }
@@ -364,6 +381,7 @@ private:
     // ---- UI refresh
     void timerCallback() override
     {
+        if (++ticks <= 3 || ticks % 600 == 0) trace ("tick " + String (ticks));
         for (int c = 0; c < 2; ++c) {
             const float pk = peak[c].exchange (0.0f);
             heldPeak[c] = jmax (pk, heldPeak[c] * 0.85f);
@@ -395,6 +413,7 @@ private:
               << " · fila " << String (streamer.getFifoSeconds(), 2) << " s";
         if (streamer.getFramesDropped() > 0) d << " · PERDEU " << String (streamer.getFramesDropped());
 
+        if (s != lastStatus) { trace ("status: " + s + (currentLink.isNotEmpty() ? "  " + currentLink : String())); lastStatus = s; }
         status.setText (u8 ("● ") + s, dontSendNotification);
         status.setColour (Label::textColourId, col);
         detail.setText (d, dontSendNotification);
@@ -404,6 +423,9 @@ private:
         whatsBtn.setEnabled (currentLink.isNotEmpty());
     }
 
+    std::unique_ptr<FileLogger> fileLogger;
+    int ticks = 0;
+    String lastStatus;
     std::unique_ptr<PropertiesFile> props;
     AudioDeviceManager deviceManager;
     std::unique_ptr<AudioDeviceSelectorComponent> selector;
