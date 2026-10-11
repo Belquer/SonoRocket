@@ -36,7 +36,7 @@ endif()
 # `project()` command. `project()` sets up some helpful variables that describe source/binary
 # directories, and the current project version. This is a standard CMake command.
 
-project(SonoBus VERSION 1.7.2)
+project(SonoRocket VERSION 0.1.0)
 
 set(BUILDVERSION 80)
 
@@ -123,10 +123,10 @@ set (MacPList "<plist version=\"1.0\">
 <array>
      <dict>
          <key>CFBundleURLName</key>
-         <string>net.sonobus</string>
+         <string>com.dbstudios.sonorocket</string>
          <key>CFBundleURLSchemes</key>
          <array>
-              <string>sonobus</string>
+              <string>sonorocket</string>
          </array>
       </dict>
    </array>
@@ -155,8 +155,8 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
         NEEDS_MIDI_INPUT TRUE
         NEEDS_MIDI_OUTPUT TRUE
         EDITOR_WANTS_KEYBOARD_FOCUS TRUE
-        COMPANY_NAME "Sonosaurus"
-        BUNDLE_ID "com.Sonosaurus.SonoBus"
+        COMPANY_NAME "dB studios"
+        BUNDLE_ID "com.dbstudios.SonoRocket"
         MICROPHONE_PERMISSION_ENABLED TRUE
         
         ICON_BIG "images/sonobus_icon_mac_1024.png"
@@ -166,7 +166,7 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
         VST3_CATEGORIES "${vst3cats}"
         AAX_CATEGORY "AAX_ePlugInCategory_None"
 
-	LV2URI "https://sonobus.net/lv2/sonobus"
+	LV2URI "https://github.com/belquer/sonorocket/lv2"
 	
         # mac settings
         HARDENED_RUNTIME_ENABLED TRUE
@@ -176,10 +176,10 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
         
         
         # other settings...
-        PLUGIN_MANUFACTURER_CODE Sono
+        PLUGIN_MANUFACTURER_CODE DbSt
         PLUGIN_CODE ${plugincode}
         FORMATS ${formats}
-        DESCRIPTION "SonoBus - Network Audio"
+        DESCRIPTION "SonoRocket - lossless master streaming (fork of SonoBus)"
         PRODUCT_NAME "${product_name}")
 
     juce_generate_juce_header("${target_name}")
@@ -196,7 +196,12 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
         $<$<CONFIG:Debug>:LOGLEVEL=2>
         USE_CODEC_OPUS=1
         AOO_TIMEFILTER_CHECK=0
-        AOO_STATIC)
+        AOO_STATIC
+        # SonoRocket: latency is cheap, dropouts are not.
+        # Keep 8 s of sent audio for retransmission and retry hard.
+        AOO_RESEND_BUFSIZE=8000
+        AOO_RESEND_LIMIT=24
+        AOO_SINK_BUFSIZE=2000)
 
     set(PlatSourceFiles
         Source/CrossPlatformUtils.h
@@ -621,11 +626,11 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
 endfunction()
 
 # most of the targets
-sono_add_custom_plugin_target(SonoBus SonoBus "${FormatsToBuild}" FALSE  "NBus")
+sono_add_custom_plugin_target(SonoBus SonoRocket "${FormatsToBuild}" FALSE  "SRkt")
 
 # Mobile targets
 #sono_add_custom_plugin_target(SonoBusMobile "AUv3 Standalone" FALSE "NBus")
 
 # add VSTi target
-sono_add_custom_plugin_target(SonoBusInst "SonoBusInstrument" "VST3" TRUE  "IBus")
+#sono_add_custom_plugin_target(SonoBusInst "SonoBusInstrument" "VST3" TRUE  "IBus")
 

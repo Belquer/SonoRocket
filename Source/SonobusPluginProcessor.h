@@ -967,15 +967,15 @@ private:
     Atomic<float>   mInMonPan2    {   1.0 };
     Atomic<float>   mDry    { 0.0 };
     Atomic<float>   mWet    {   1.0 };
-    Atomic<double>   mBufferTime     { 0.001 };
-    Atomic<double>   mMaxBufferTime     { 1.0 };
+    Atomic<double>   mBufferTime     { 2.0 };    // SonoRocket: 2 s fixed jitter buffer
+    Atomic<double>   mMaxBufferTime     { 8.0 }; // SonoRocket: allow up to 8 s
     Atomic<bool>   mMainSendMute    {   false };
     Atomic<bool>   mMainRecvMute    {   false };
     Atomic<bool>   mMainInMute    {   false };
     Atomic<bool>   mMainMonitorSolo    {   false };
     Atomic<bool>   mMetEnabled  { false };
     Atomic<bool>   mSendMet  { false };
-    Atomic<int>   mSendChannels  { 1 }; // 0 is match inputs, 1 is 1, etc
+    Atomic<int>   mSendChannels  { 0 }; // SonoRocket: match inputs (stereo master)
     Atomic<float>   mMetGain    { 0.5f };
     Atomic<double>   mMetTempo    { 100.0f };
     Atomic<bool>   mSendPlaybackAudio  { false };
@@ -1016,7 +1016,7 @@ private:
     Atomic<bool>   mAnythingSoloed  { false };
 
 
-    int defaultAutoNetbufMode = AutoNetBufferModeAutoFull;
+    int defaultAutoNetbufMode = AutoNetBufferModeOff; // SonoRocket: fixed buffer, never shrink
     
     bool mChangingDefaultAudioCodecChangesAll = false;
     bool mChangingDefaultRecvAudioCodecChangesAll = false;
@@ -1148,7 +1148,7 @@ private:
     
     
     Array<AudioCodecFormatInfo> mAudioFormats;
-    int mDefaultAudioFormatIndex = 4;
+    int mDefaultAudioFormatIndex = 10; // SonoRocket: PCM 32-bit float (bit-exact)
     
     RangedAudioParameter * mDefaultAudioFormatParam;
 

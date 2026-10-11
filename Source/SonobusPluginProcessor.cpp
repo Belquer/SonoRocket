@@ -286,7 +286,7 @@ struct SonobusAudioProcessor::RemotePeer {
 
     float buffertimeMs = 0.0f;
     float padBufferTimeMs = 0.0f;
-    AutoNetBufferMode  autosizeBufferMode = AutoNetBufferModeAutoFull;
+    AutoNetBufferMode  autosizeBufferMode = AutoNetBufferModeOff;
     bool sendActive = false;
     bool recvActive = false;
     bool sendAllow = true;
@@ -783,12 +783,16 @@ mState (*this, &mUndoManager, "SonoBusAoO",
         mDry = 1.0;
         mSendChannels = 0; // match inputs default for plugin
         mSyncMetToHost = true;
+        mMainRecvMute = true;   // SonoRocket: plugin on the master never mixes remote audio into the bounce
     } else {
         mDry = 0.0;
         mSyncMetToHost = false;
+        mMainSendMute = true;   // SonoRocket: standalone is the listener; don't send the room mic
     }
 
     mState.getParameter(paramDry)->setValue(mDry.get());
+    mState.getParameter(paramMainSendMute)->setValue(mMainSendMute.get() ? 1.0f : 0.0f);
+    mState.getParameter(paramMainRecvMute)->setValue(mMainRecvMute.get() ? 1.0f : 0.0f);
     mState.getParameter(paramSendChannels)->setValue(mState.getParameter(paramSendChannels)->convertTo0to1(mSendChannels.get()));
 
     mTempoParameter = mState.getParameter(paramMetTempo);
@@ -1346,7 +1350,7 @@ void SonobusAudioProcessor::initFormats()
     mAudioFormats.add(AudioCodecFormatInfo(4));
     //mAudioFormats.add(AudioCodecFormatInfo(CodecPCM, 8)); // insanity!
 
-    mDefaultAudioFormatIndex = 4; // 96kpbs/ch Opus
+    mDefaultAudioFormatIndex = 10; // SonoRocket: PCM 32-bit float, bit-exact
 }
 
 int SonobusAudioProcessor::findFormatIndex(SonobusAudioProcessor::AudioCodecFormatCodec codec, int bitrate, int bitdepth)
