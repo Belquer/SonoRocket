@@ -1,5 +1,5 @@
 module github.com/belquer/sonorocket/relay
 
-go 1.24.7
+go 1.20
 
 require github.com/gorilla/websocket v1.5.3
