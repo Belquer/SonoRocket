@@ -137,8 +137,11 @@ func currentBase() string {
 	if publicURL != "" {
 		return publicURL
 	}
-	_, port, _ := net.SplitHostPort(*httpAddr)
-	return "http://" + lanIP() + ":" + port
+	host, port, _ := net.SplitHostPort(*httpAddr)
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = lanIP()
+	}
+	return "http://" + host + ":" + port
 }
 
 func linkFor(room string) string { return currentBase() + "/?room=" + room }

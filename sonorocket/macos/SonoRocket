@@ -74,7 +74,8 @@ if ! alive; then
   ROOM_FILE="$SUPPORT/room"   # same room on this Mac every time
   [ -s "$ROOM_FILE" ] || echo "mix-$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 8)" > "$ROOM_FILE"
   rm -f "$STATUS"
-  "$APP_RES/rocket-relay" -room "$(cat "$ROOM_FILE")" -status-file "$STATUS" >"$LOG" 2>&1 &
+  # localhost only: the tunnel reaches it locally, and macOS never asks about incoming connections
+  "$APP_RES/rocket-relay" -http 127.0.0.1:8080 -room "$(cat "$ROOM_FILE")" -status-file "$STATUS" >"$LOG" 2>&1 &
   echo $! > "$PIDFILE"
   STARTED=1
   for _ in $(seq 1 40); do alive && break; sleep 0.25; done
@@ -103,9 +104,7 @@ wait_link() {   # up to $1 seconds
 
 while ! wait_link 45; do
   B=$(dialog "Não consegui gerar o link público.
-Confira se este Mac está na internet.
-
-(Na mesma rede Wi-Fi funciona por: $(field link))" '{"Desligar", "Tentar de novo"}' "Tentar de novo")
+Confira se este Mac está na internet." '{"Desligar", "Tentar de novo"}' "Tentar de novo")
   [ "$B" = "Tentar de novo" ] || exit 0
 done
 
