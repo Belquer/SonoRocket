@@ -11,7 +11,8 @@ name: mac-app
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths-ignore: ["**.md"]
   workflow_dispatch:
 
 permissions:
@@ -29,10 +30,9 @@ jobs:
 
       - name: Version
         id: v
-        # tags give the release version; manual runs get a unique build number so the
-        # launcher knows to update the installed plugin
+        # every build gets a unique version, so the launcher knows to update the installed plugin
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.${GITHUB_RUN_NUMBER}"; fi
+          v="0.1.${GITHUB_RUN_NUMBER}"
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Tools
@@ -101,9 +101,16 @@ jobs:
           name: SonoRocket-mac
           path: dist/*.zip
 
+      # Each green build on main becomes the latest release, so
+      # https://github.com/Belquer/SonoRocket/releases/latest/download/SonoRocket-mac.zip
+      # always serves the newest app.
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.v.outputs.version }}
+          name: SonoRocket ${{ steps.v.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          make_latest: "true"
           files: dist/*.zip
           body_path: sonorocket/macos/COMO-USAR.md
