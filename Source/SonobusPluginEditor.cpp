@@ -3092,11 +3092,12 @@ void SonobusAudioProcessorEditor::showRocketView(bool show)
         Component* dw = this;
         if (!mRocketView) {
             mRocketView = std::make_unique<RocketView>(processor);
-            mRocketView->onPreferredHeightChanged = [this] {
+            Component::SafePointer<SonobusAudioProcessorEditor> safeThis(this);
+            mRocketView->onPreferredHeightChanged = [this, safeThis] {
                 // reopen at the new size ("Avançado" toggled)
                 showRocketView(false);
-                MessageManager::callAsync([sp = Component::SafePointer<SonobusAudioProcessorEditor>(this)] {
-                    if (sp) sp->showRocketView(true);
+                MessageManager::callAsync([safeThis] {
+                    if (safeThis != nullptr) safeThis->showRocketView(true);
                 });
             };
         }

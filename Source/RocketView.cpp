@@ -29,13 +29,14 @@ RocketView::RocketView (SonobusAudioProcessor& p) : processor (p)
     detailLabel.setColour (Label::textColourId, Colours::white.withAlpha (0.55f));
     addAndMakeVisible (detailLabel);
 
-    copyButton.onClick = [this] {
+    Component::SafePointer<RocketView> safeThis (this);   // captured by value: MSVC rejects SafePointer(this) inside nested lambdas
+    copyButton.onClick = [this, safeThis] {
         const auto link = listenerLink();
         if (link.isNotEmpty()) {
             SystemClipboard::copyTextToClipboard (link);
             copyButton.setButtonText ("Copiado!");
-            Timer::callAfterDelay (1500, [safe = Component::SafePointer<RocketView> (this)] {
-                if (safe) safe->copyButton.setButtonText ("Copiar link");
+            Timer::callAfterDelay (1500, [safeThis] {
+                if (safeThis != nullptr) safeThis->copyButton.setButtonText ("Copiar link");
             });
         }
     };

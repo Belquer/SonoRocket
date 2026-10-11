@@ -112,11 +112,12 @@ jobs:
         shell: bash
         run: echo "version=0.2.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
 
-      - name: Build capture app + VST3
+      # The plugin (SonoBus_VST3) needs the ASIO SDK on Windows; the capture app doesn't.
+      - name: Build capture app
         shell: bash
         run: |
           cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DSONOROCKET_VERSION="${{ steps.v.outputs.version }}"
-          cmake --build build --config Release --target SonoRocketCapture SonoBus_VST3 -- -m
+          cmake --build build --config Release --target SonoRocketCapture -- -m
 
       # Go 1.20 is the last release that still runs on Windows 7/8.1
       - uses: actions/setup-go@v5
@@ -138,8 +139,6 @@ jobs:
           cp build/SonoRocketCapture_artefacts/Release/SonoRocket.exe "$OUT/"
           cp "$RUNNER_TEMP/rocket-relay.exe" "$OUT/"
           curl -fsSL -o "$OUT/cloudflared.exe" https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
-          mkdir -p "$OUT/Plugin (DAWs modernas)"
-          cp -r build/SonoBus_artefacts/Release/VST3/SonoRocket.vst3 "$OUT/Plugin (DAWs modernas)/"
           cp sonorocket/windows/LEIA-ME.txt "$OUT/"
           cd "$RUNNER_TEMP" && 7z a -tzip "$GITHUB_WORKSPACE/dist/SonoRocket-windows.zip" SonoRocket >/dev/null
           ls -la "$GITHUB_WORKSPACE/dist"
