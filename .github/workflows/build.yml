@@ -7,7 +7,7 @@
 #   MACOS_CERT_P12_BASE64, MACOS_CERT_PASSWORD   Developer ID Application cert
 #   MACOS_SIGN_IDENTITY                          e.g. "Developer ID Application: Daniel Belquer (TEAMID)"
 #   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD  for notarization
-name: mac-app
+name: build
 
 on:
   push:
@@ -19,7 +19,7 @@ permissions:
   contents: write   # create the release
 
 jobs:
-  build:
+  mac:
     runs-on: macos-14
     timeout-minutes: 90
     env:
@@ -32,7 +32,7 @@ jobs:
         id: v
         # every build gets a unique version, so the launcher knows to update the installed plugin
         run: |
-          v="0.1.${GITHUB_RUN_NUMBER}"
+          v="0.2.${GITHUB_RUN_NUMBER}"
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Tools
@@ -101,16 +101,72 @@ jobs:
           name: SonoRocket-mac
           path: dist/*.zip
 
-      # Each green build on main becomes the latest release, so
-      # https://github.com/Belquer/SonoRocket/releases/latest/download/SonoRocket-mac.zip
-      # always serves the newest app.
-      - name: Release
-        if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: v
+        shell: bash
+        run: echo "version=0.2.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Build capture app + VST3
+        shell: bash
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DSONOROCKET_VERSION="${{ steps.v.outputs.version }}"
+          cmake --build build --config Release --target SonoRocketCapture SonoBus_VST3 -- -m
+
+      # Go 1.20 is the last release that still runs on Windows 7/8.1
+      - uses: actions/setup-go@v5
         with:
-          tag_name: v${{ steps.v.outputs.version }}
-          name: SonoRocket ${{ steps.v.outputs.version }}
+          go-version: "1.20"
+          cache-dependency-path: sonorocket/relay/go.sum
+
+      - name: Build relay
+        shell: bash
+        working-directory: sonorocket/relay
+        run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$RUNNER_TEMP/rocket-relay.exe" .
+
+      - name: Package
+        shell: bash
+        run: |
+          set -e
+          OUT="$RUNNER_TEMP/SonoRocket"
+          mkdir -p "$OUT" dist
+          cp build/SonoRocketCapture_artefacts/Release/SonoRocket.exe "$OUT/"
+          cp "$RUNNER_TEMP/rocket-relay.exe" "$OUT/"
+          curl -fsSL -o "$OUT/cloudflared.exe" https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+          mkdir -p "$OUT/Plugin (DAWs modernas)"
+          cp -r build/SonoBus_artefacts/Release/VST3/SonoRocket.vst3 "$OUT/Plugin (DAWs modernas)/"
+          cp sonorocket/windows/LEIA-ME.txt "$OUT/"
+          cd "$RUNNER_TEMP" && 7z a -tzip "$GITHUB_WORKSPACE/dist/SonoRocket-windows.zip" SonoRocket >/dev/null
+          ls -la "$GITHUB_WORKSPACE/dist"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SonoRocket-windows
+          path: dist/*.zip
+
+  # Each green build on main becomes the latest release, so these links always serve the newest:
+  #   https://github.com/Belquer/SonoRocket/releases/latest/download/SonoRocket-windows.zip
+  #   https://github.com/Belquer/SonoRocket/releases/latest/download/SonoRocket-mac.zip
+  release:
+    needs: [mac, windows]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.2.${{ github.run_number }}
+          name: SonoRocket 0.2.${{ github.run_number }}
           target_commitish: ${{ github.sha }}
           make_latest: "true"
           files: dist/*.zip
-          body_path: sonorocket/macos/COMO-USAR.md
+          body_path: sonorocket/RELEASE.md

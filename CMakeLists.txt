@@ -638,3 +638,36 @@ sono_add_custom_plugin_target(SonoBus SonoRocket "${FormatsToBuild}" FALSE  "SRk
 # add VSTi target
 #sono_add_custom_plugin_target(SonoBusInst "SonoBusInstrument" "VST3" TRUE  "IBus")
 
+
+
+# ---------------------------------------------------------------- SonoRocket capture app
+# Streams any audio input to the browser (no plugin needed). Ships with the
+# relay (Go) and cloudflared next to the executable.
+set (SONOROCKET_VERSION "dev" CACHE STRING "Version shown in the SonoRocket app")
+
+juce_add_gui_app(SonoRocketCapture
+    PRODUCT_NAME "SonoRocket"
+    COMPANY_NAME "dB studios"
+    BUNDLE_ID "com.dbstudios.SonoRocket.capture"
+    VERSION "${PROJECT_VERSION}"
+    ICON_BIG "sonorocket/macos/AppIcon.png"
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "SonoRocket needs the audio input to stream it."
+    HARDENED_RUNTIME_ENABLED TRUE
+    HARDENED_RUNTIME_OPTIONS "com.apple.security.device.audio-input")
+
+target_sources(SonoRocketCapture PRIVATE Source/capture/CaptureApp.cpp Source/RocketStreamer.cpp)
+target_include_directories(SonoRocketCapture PRIVATE Source)
+target_compile_definitions(SonoRocketCapture PRIVATE
+    SONOROCKET_VERSION="${SONOROCKET_VERSION}"
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_APPLICATION_NAME_STRING="SonoRocket"
+    JUCE_APPLICATION_VERSION_STRING="${SONOROCKET_VERSION}"
+    JUCE_WASAPI=1
+    JUCE_DIRECTSOUND=1
+    JUCE_DISPLAY_SPLASH_SCREEN=0)
+target_link_libraries(SonoRocketCapture PRIVATE
+    juce::juce_audio_utils
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_lto_flags)

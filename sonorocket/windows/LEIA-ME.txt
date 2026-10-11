@@ -1,0 +1,28 @@
+﻿SonoRocket - transmite o som do Pro Tools para o dB ouvir em qualidade máxima
+================================================================================
+
+PRIMEIRA VEZ
+1. Clique com o botão direito no arquivo SonoRocket-windows.zip > "Extrair Tudo..."
+   e extraia para Documentos. Vai aparecer a pasta SonoRocket.
+2. Dentro dela, dê dois cliques em SonoRocket.exe.
+   Se aparecer "O Windows protegeu o computador": clique em "Mais informações"
+   e depois em "Executar assim mesmo". (Só na primeira vez.)
+3. Na parte de baixo do SonoRocket, em "Entrada de áudio", escolha a mesma
+   entrada por onde o som do Mac (Pro Tools) já chega neste computador.
+   - Se aparecer o tipo "Windows Audio (Exclusive Mode)", use esse.
+   - Use a mesma taxa de amostragem da sessão (ex.: 48000).
+   - Toque algo no Pro Tools: as barrinhas L e R têm que mexer.
+
+TODA VEZ
+1. Dois cliques em SonoRocket.exe.
+2. Espere o link aparecer (uns 10 segundos).
+3. Clique em "Mandar no WhatsApp" e escolha o dB.
+4. Dê play no Pro Tools. Pronto.
+Deixe o SonoRocket aberto enquanto ele estiver ouvindo. Para encerrar, feche a janela.
+
+SE ALGO NÃO FUNCIONAR
+- "sem sinal na entrada": a entrada escolhida não está recebendo som. Confira o cabo
+  e se é a entrada certa.
+- O link não aparece: confira se o computador está na internet.
+
+O som vai sem compressão. O dB escuta uns 2 segundos atrasado, e isso é normal.
