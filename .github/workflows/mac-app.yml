@@ -1,0 +1,105 @@
+# Builds SonoRocket.app for macOS (universal: Apple Silicon + Intel):
+# plugin (VST3 + AU) + relay + cloudflared, wrapped in the double-click launcher.
+# Signing/notarization run only when the secrets below exist; otherwise the app
+# is unsigned and the first open needs "Abrir Mesmo Assim" in System Settings.
+#
+# Secrets (optional):
+#   MACOS_CERT_P12_BASE64, MACOS_CERT_PASSWORD   Developer ID Application cert
+#   MACOS_SIGN_IDENTITY                          e.g. "Developer ID Application: Daniel Belquer (TEAMID)"
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD  for notarization
+name: mac-app
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 90
+    env:
+      HAS_CERT: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
+      HAS_NOTARY: ${{ secrets.APPLE_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: v
+        # tags give the release version; manual runs get a unique build number so the
+        # launcher knows to update the installed plugin
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.${GITHUB_RUN_NUMBER}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Tools
+        run: brew install ninja
+
+      - name: Build plugin (VST3 + AU, universal)
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUniversalBinary=ON
+          cmake --build build --target SonoBus_VST3 SonoBus_AU -j "$(sysctl -n hw.ncpu)"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: sonorocket/relay/go.sum
+
+      - name: Build relay (universal)
+        working-directory: sonorocket/relay
+        run: |
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /tmp/relay-arm64 .
+          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /tmp/relay-amd64 .
+          lipo -create /tmp/relay-arm64 /tmp/relay-amd64 -output /tmp/rocket-relay
+
+      - name: Fetch cloudflared (universal)
+        run: |
+          for a in arm64 amd64; do
+            curl -fsSL -o /tmp/cf-$a.tgz "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-$a.tgz"
+            mkdir -p /tmp/cf-$a && tar -xzf /tmp/cf-$a.tgz -C /tmp/cf-$a
+          done
+          lipo -create /tmp/cf-arm64/cloudflared /tmp/cf-amd64/cloudflared -output /tmp/cloudflared
+
+      - name: Import signing certificate
+        if: env.HAS_CERT == 'true'
+        env:
+          CERT: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PW: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          echo "$CERT" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "$CERT_PW" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
+          rm /tmp/cert.p12
+
+      - name: Notarization credentials
+        if: env.HAS_NOTARY == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: xcrun notarytool store-credentials sonorocket --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+
+      - name: Assemble SonoRocket.app
+        env:
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          NOTARY_PROFILE: ${{ env.HAS_NOTARY == 'true' && 'sonorocket' || '' }}
+        run: |
+          mkdir -p dist
+          sonorocket/macos/build-app.sh "${{ steps.v.outputs.version }}" \
+            build/SonoBus_artefacts/Release/VST3/SonoRocket.vst3 \
+            build/SonoBus_artefacts/Release/AU/SonoRocket.component \
+            /tmp/rocket-relay /tmp/cloudflared dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SonoRocket-mac
+          path: dist/*.zip
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip

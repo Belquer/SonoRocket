@@ -12,7 +12,12 @@ verified by construction (CRC32 per block).
    {"v":1,"room":"mix-luciano","key":"<RELAY_KEY>","sr":48000,"ch":2,"fmt":"f32"}
    ```
 
-2. Relay answers `OK\n` or `ERR <reason>\n` and closes on error.
+   `room` may be `"auto"`: the relay then uses its own room (stable for the run).
+
+2. Relay answers `OK {"room":"…","link":"…"}\n` or `ERR <reason>\n` (and closes).
+   Later, whenever the public link changes (tunnel up, restarted), the relay
+   sends `LINK <url>\n` on the same connection. Senders that don't care can
+   ignore incoming bytes.
 
 3. Sender then streams length-prefixed frames, all little-endian:
 

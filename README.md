@@ -17,7 +17,7 @@ SonoRocket is a fork of [SonoBus](https://github.com/sonosaurus/sonobus) (GPLv3)
 |---|---|
 | Plugin | Taps the input buffer before any SonoBus processing; copies raw float32 bits into a lock-free FIFO |
 | Network | TCP, so nothing is lost or reordered; a 20 s FIFO rides out network stalls |
-| Relay | Forwards payloads byte-for-byte; never decodes |
+| Relay | Single Go binary; forwards payloads byte-for-byte, never decodes |
 | Browser | CRC32 checks every block; the worklet plays samples as-is (no interpolation, no gain). Underruns rebuffer with silence; nothing is stretched or concealed |
 
 The page shows a green **"integridade: bit a bit ✓"** while every block matches.
@@ -25,23 +25,23 @@ The one stage outside our control is the listener's device. If the phone's hardw
 
 Verified in this repo (`sonorocket/test`): the real VST3, loaded in a headless host and fed overs above 0 dBFS, denormals and values below the 24-bit floor in varying block sizes, arrives at the listener with **0 sample mismatches**.
 
-## Quick start (no server: relay on the producer's Mac)
+## Quick start (Mac, zero config)
 
-1. Install the plugin; put **SonoRocket** as the last insert on the master.
-2. On the same machine: `brew install cloudflared node`, then `sonorocket/relay/start-with-tunnel.sh mix-luciano`.
-3. In the plugin, click **Rocket**: Relay `127.0.0.1`, Port `9100`, Room `mix-luciano`, Listen URL = the `trycloudflare.com` address printed by the script. Click **Start streaming**.
-4. Send the link (**Copy listener link**). The listener opens it and taps **Ouvir**.
+1. Download `SonoRocket-<version>-mac.zip` (GitHub Actions → mac-app), unzip, open **SonoRocket.app**.
+   On first open it installs the plugin (VST3 + AU) into your user plug-in folders.
+2. Pro Tools: Master Fader, last insert → Blue Cat PatchWork → **SonoRocket**. Other DAWs: SonoRocket directly.
+3. The app window shows the link. **Mandar no WhatsApp** or **Copiar link**. Done.
 
-Talk over Meet/WhatsApp as usual with the conferencing app's audio muted on your music output, or keep calling on a separate device. The browser stream runs ~2 s behind, so refer to timecode or bar numbers.
+The plugin streams by default to the app on the same Mac (room "auto"), and the app's relay opens a Cloudflare quick tunnel and pushes the public link back to the plugin. Nobody types a URL. `sonorocket/macos/COMO-USAR.md` is the one-page guide for the producer.
 
-## Relay on a server (always-on link)
+## Relay on a server (fixed link)
 
 ```
-cd sonorocket/relay && npm install
-RELAY_KEY=some-long-secret SENDER_PORT=9100 HTTP_PORT=8080 node server.js
+cd sonorocket/relay && go build -o rocket-relay .
+./rocket-relay -sender :9100 -key some-long-secret -public-url https://rocket.example.com -room mix-dB
 ```
 
-Put HTTPS in front of port 8080 (Caddy, nginx or a Cloudflare tunnel). Browsers need HTTPS for AudioWorklet everywhere except `localhost`. Open TCP 9100 for senders and put the same key in the plugin.
+Put HTTPS in front of `:8080` (Caddy, nginx or a named Cloudflare tunnel). In the plugin, under **Avançado**: relay host, port, key.
 
 ## Plugin defaults (vs. SonoBus)
 

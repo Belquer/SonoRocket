@@ -1,0 +1,135 @@
+#!/bin/bash
+# SonoRocket.app — the producer's double click.
+#   1. installs/updates the plugin (user folders, no admin password)
+#   2. starts the relay + public tunnel in the background
+#   3. shows one small window with the link: Copy / WhatsApp / Turn off
+# Uses only what ships with macOS (bash, curl, plutil, osascript): no Python,
+# no Xcode tools, nothing to configure.
+
+set -u
+APP_RES="$(cd "$(dirname "$0")/../Resources" && pwd)"
+APP_ROOT="$(cd "$APP_RES/../.." && pwd)"
+SUPPORT="$HOME/Library/Application Support/SonoRocket"
+STATUS="$SUPPORT/status.json"
+LOG="$SUPPORT/relay.log"
+PIDFILE="$SUPPORT/relay.pid"
+VERSION="$(cat "$APP_RES/VERSION" 2>/dev/null || echo dev)"
+OSA="${SONOROCKET_OSASCRIPT:-/usr/bin/osascript}"   # overridable for tests
+HTTP="http://127.0.0.1:8080"
+mkdir -p "$SUPPORT"
+
+esc() { local s="${1//\\/\\\\}"; printf %s "${s//\"/\\\"}"; }   # for AppleScript string literals
+
+dialog() {   # $1 text, $2 buttons (AppleScript list), $3 default button → prints the button pressed
+  "$OSA" -e 'tell me to activate' \
+         -e "button returned of (display dialog \"$(esc "$1")\" with title \"SonoRocket\" buttons $2 default button \"$3\" with icon note)" 2>/dev/null
+}
+notify() { "$OSA" -e "display notification \"$(esc "$1")\" with title \"SonoRocket\"" >/dev/null 2>&1 || true; }
+
+field() {   # read one key from the relay's status JSON (plutil reads JSON natively)
+  "${SONOROCKET_PLUTIL:-/usr/bin/plutil}" -extract "$1" raw -o - "$STATUS" 2>/dev/null
+}
+refresh() { curl -fsS --max-time 2 "$HTTP/status" -o "$STATUS.live" 2>/dev/null && mv "$STATUS.live" "$STATUS"; }
+
+urlencode() {   # byte-wise, so "á" becomes %C3%A1
+  local LC_ALL=C s="$1" out="" c i
+  for ((i = 0; i < ${#s}; i++)); do
+    c="${s:i:1}"
+    case "$c" in [a-zA-Z0-9.~_-]) out+="$c" ;; *) out+=$(printf '%%%02X' "'$c") ;; esac
+  done
+  printf %s "$out"
+}
+
+# Our bundle came from the internet: clear quarantine so the helpers inside can run.
+xattr -dr com.apple.quarantine "$APP_ROOT" 2>/dev/null || true
+
+# ---------------------------------------------------------------- 1. plugin
+install_plugin() {   # $1 bundle name, $2 destination dir; returns 0 if it (re)installed
+  # version marker lives outside the bundle so a signed plugin stays intact
+  local src="$APP_RES/$1" dst="$2/$1" mark="$SUPPORT/installed-$1"
+  [ -d "$src" ] || return 1
+  [ -d "$dst" ] && [ "$(cat "$mark" 2>/dev/null)" = "$VERSION" ] && return 1
+  mkdir -p "$2" && rm -rf "$dst" && cp -R "$src" "$dst" || return 1
+  xattr -dr com.apple.quarantine "$dst" 2>/dev/null
+  echo "$VERSION" > "$mark"
+  return 0
+}
+NEW=""
+install_plugin SonoRocket.vst3 "$HOME/Library/Audio/Plug-Ins/VST3" && NEW=1
+install_plugin SonoRocket.component "$HOME/Library/Audio/Plug-Ins/Components" && NEW=1
+if [ -n "$NEW" ]; then
+  dialog "Plugin SonoRocket instalado ✓
+
+No Pro Tools, no Master Fader:
+último insert → Blue Cat PatchWork → SonoRocket
+
+Depois é só deixar este app aberto: o plugin transmite sozinho." '{"Entendi"}' "Entendi" >/dev/null
+fi
+
+# ---------------------------------------------------------------- 2. relay
+alive() { curl -fsS --max-time 1 "$HTTP/health" >/dev/null 2>&1; }
+
+STARTED=""
+if ! alive; then
+  ROOM_FILE="$SUPPORT/room"   # same room on this Mac every time
+  [ -s "$ROOM_FILE" ] || echo "mix-$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 8)" > "$ROOM_FILE"
+  rm -f "$STATUS"
+  "$APP_RES/rocket-relay" -room "$(cat "$ROOM_FILE")" -status-file "$STATUS" >"$LOG" 2>&1 &
+  echo $! > "$PIDFILE"
+  STARTED=1
+  for _ in $(seq 1 40); do alive && break; sleep 0.25; done
+  if ! alive; then
+    dialog "Não consegui ligar o SonoRocket.
+
+Detalhes: $LOG" '{"OK"}' "OK" >/dev/null
+    exit 1
+  fi
+fi
+
+stop_relay() { if [ -n "$STARTED" ] && [ -f "$PIDFILE" ]; then kill "$(cat "$PIDFILE")" 2>/dev/null; rm -f "$PIDFILE"; fi; }
+trap stop_relay EXIT INT TERM HUP
+
+# ---------------------------------------------------------------- 3. wait for the public link, quietly
+notify "Ligando… o link aparece em alguns segundos."
+wait_link() {   # up to $1 seconds
+  local i
+  for ((i = 0; i < $1 * 2; i++)); do
+    refresh
+    case "$(field tunnel)" in up|fixed) return 0 ;; esac
+    sleep 0.5
+  done
+  return 1
+}
+
+while ! wait_link 45; do
+  B=$(dialog "Não consegui gerar o link público.
+Confira se este Mac está na internet.
+
+(Na mesma rede Wi-Fi funciona por: $(field link))" '{"Desligar", "Tentar de novo"}' "Tentar de novo")
+  [ "$B" = "Tentar de novo" ] || exit 0
+done
+
+# ---------------------------------------------------------------- 4. the window
+while :; do
+  refresh
+  LINK="$(field link)"
+  if [ "$(field senderOnline)" = "true" ]; then S1="🟢 Pro Tools transmitindo"; else S1="⚪️ Esperando o Pro Tools (SonoRocket no Master)"; fi
+  S2="👂 Ouvindo agora: $(field listeners)"
+
+  B=$(dialog "$S1
+$S2
+
+🔗 $LINK
+
+Deixe este app aberto durante a sessão." '{"Desligar", "Copiar link", "Mandar no WhatsApp"}' "Mandar no WhatsApp")
+
+  case "$B" in
+    "Copiar link") printf %s "$LINK" | pbcopy; notify "Link copiado" ;;
+    "Mandar no WhatsApp") open "https://wa.me/?text=$(urlencode "Mix ao vivo, qualidade máxima: $LINK")" ;;
+    "Desligar")
+      C=$(dialog "Desligar o SonoRocket? Quem estiver ouvindo vai parar de ouvir." '{"Cancelar", "Desligar"}' "Cancelar")
+      [ "$C" = "Desligar" ] && break ;;
+    *) sleep 1 ;;   # Esc or a hiccup: just show the window again, never stop the stream by accident
+  esac
+done
+exit 0
