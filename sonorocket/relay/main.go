@@ -46,6 +46,8 @@ var (
 	publicBase  = flag.String("public-url", os.Getenv("PUBLIC_URL"), "public base URL when running behind your own HTTPS (disables tunnel)")
 	backlogSec  = flag.Float64("backlog", 4, "seconds of audio sent to late joiners")
 	statusFile  = flag.String("status-file", "", "write status JSON here whenever it changes (for the launcher)")
+	parentPID   = flag.Int("parent-pid", 0, "exit (and stop the tunnel) when this process exits")
+	logFile     = flag.String("log", "", "append logs to this file instead of stderr")
 )
 
 func envOr(k, d string) string {
@@ -199,6 +201,7 @@ func runTunnel(bin string, stop <-chan struct{}) {
 	for {
 		setPublicURL("", "starting")
 		cmd := exec.Command(bin, "tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:"+port)
+		hideWindow(cmd)
 		stderr, _ := cmd.StderrPipe()
 		cmd.Stdout = io.Discard
 		if err := cmd.Start(); err != nil {
@@ -228,7 +231,7 @@ func runTunnel(bin string, stop <-chan struct{}) {
 		go func() { done <- cmd.Wait() }()
 		select {
 		case <-stop:
-			_ = cmd.Process.Signal(syscall.SIGTERM)
+			stopChild(cmd)
 			select {
 			case <-done:
 			case <-time.After(3 * time.Second):
@@ -301,7 +304,9 @@ type handshake struct {
 	Fmt  string `json:"fmt"`
 }
 
-func validFormat(f format) bool { return f.Fmt == "f32" && f.SR > 0 && f.SR <= 768000 && f.CH >= 1 && f.CH <= 2 }
+func validFormat(f format) bool {
+	return f.Fmt == "f32" && f.SR > 0 && f.SR <= 768000 && f.CH >= 1 && f.CH <= 2
+}
 
 func handleSender(c net.Conn) {
 	defer c.Close()
@@ -526,6 +531,11 @@ func randomRoom() string {
 func main() {
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	if *logFile != "" {
+		if f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); err == nil {
+			log.SetOutput(f)
+		}
+	}
 	if *defaultRoom == "" {
 		*defaultRoom = randomRoom()
 	}
@@ -538,6 +548,16 @@ func main() {
 	mux.Handle("/", noCache(http.FileServer(http.FS(sub))))
 	mux.HandleFunc("/ws", handleWS)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
+	quit := make(chan struct{})
+	var quitOnce sync.Once
+	mux.HandleFunc("/quit", func(w http.ResponseWriter, r *http.Request) {
+		if host, _, _ := net.SplitHostPort(r.RemoteAddr); !net.ParseIP(host).IsLoopback() {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		io.WriteString(w, "bye")
+		quitOnce.Do(func() { close(quit) })
+	})
 	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(getStatus())
@@ -582,9 +602,22 @@ func main() {
 	log.Printf("senders tcp %s%s · listeners %s · room %s", *senderAddr, map[bool]string{true: " (key required)", false: ""}[*relayKey != ""], currentBase(), *defaultRoom)
 	writeStatus()
 
+	if *parentPID > 0 {
+		go func() {
+			for parentAlive(*parentPID) {
+				time.Sleep(time.Second)
+			}
+			log.Printf("parent %d gone, shutting down", *parentPID)
+			quitOnce.Do(func() { close(quit) })
+		}()
+	}
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	<-sig
+	select {
+	case <-sig:
+	case <-quit:
+	}
 	close(stop)
 	<-tunnelDone
 	if *statusFile != "" {
