@@ -9,7 +9,8 @@
 #include "../RocketStreamer.h"
 
 #if JUCE_WINDOWS
- #include <windows.h>
+ // declared directly: windows.h would clash with juce::Rectangle
+ extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentProcessId();
  static int currentPid() { return (int) GetCurrentProcessId(); }
 #else
  #include <unistd.h>
@@ -226,11 +227,12 @@ public:
         addAndMakeVisible (link);
 
         styleButton (copyBtn, kLine, kText);
-        copyBtn.onClick = [this] {
+        SafePointer<MainComponent> safeThis (this);
+        copyBtn.onClick = [this, safeThis] {
             if (currentLink.isEmpty()) return;
             SystemClipboard::copyTextToClipboard (currentLink);
             copyBtn.setButtonText ("Copiado!");
-            Timer::callAfterDelay (1500, [sp = SafePointer<MainComponent> (this)] { if (sp) sp->copyBtn.setButtonText ("Copiar link"); });
+            Timer::callAfterDelay (1500, [safeThis] { if (safeThis != nullptr) safeThis->copyBtn.setButtonText ("Copiar link"); });
         };
         styleButton (whatsBtn, Colour (0xff25d366), Colours::black);
         whatsBtn.onClick = [this] {
@@ -410,7 +412,7 @@ private:
     Label title, version, status, detail, inputTitle, labL, labR, dbL, dbR, link, tip;
     LevelMeter meterL, meterR;
     TextButton copyBtn { "Copiar link" }, whatsBtn { "Mandar no WhatsApp" }, streamBtn { "Parar" };
-    Rectangle<int> inputPanel, sharePanel;
+    juce::Rectangle<int> inputPanel, sharePanel;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };
