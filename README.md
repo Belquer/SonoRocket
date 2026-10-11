@@ -27,7 +27,7 @@ Verified in this repo (`sonorocket/test`): the real VST3, loaded in a headless h
 
 ## Quick start (Mac, zero config)
 
-1. Download `SonoRocket-<version>-mac.zip` (GitHub Actions → mac-app), unzip, open **SonoRocket.app**.
+1. Download `SonoRocket-mac.zip` (GitHub Actions → mac-app), unzip, open **SonoRocket.app**.
    On first open it installs the plugin (VST3 + AU) into your user plug-in folders.
 2. Pro Tools: Master Fader, last insert → Blue Cat PatchWork → **SonoRocket**. Other DAWs: SonoRocket directly.
 3. The app window shows the link. **Mandar no WhatsApp** or **Copiar link**. Done.

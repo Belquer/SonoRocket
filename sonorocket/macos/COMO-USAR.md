@@ -4,7 +4,7 @@ Serve para o dB ouvir a mix direto do seu Pro Tools, com qualidade máxima, pelo
 
 ## Primeira vez (5 minutos)
 
-1. Abra o arquivo **SonoRocket-…-mac.zip** que o dB mandou. Vai aparecer o **SonoRocket.app**. Arraste-o para a pasta **Aplicativos**.
+1. Abra o arquivo **SonoRocket-mac.zip** que o dB mandou. Vai aparecer o **SonoRocket.app**. Arraste-o para a pasta **Aplicativos**.
 2. Dê dois cliques no **SonoRocket.app**.
    - Se o Mac disser que não pode abrir: abra **Ajustes do Sistema → Privacidade e Segurança**, role até o fim e clique em **Abrir Mesmo Assim**. Isso só acontece uma vez.
 3. Aparece o aviso **"Plugin SonoRocket instalado ✓"**. Clique em **Entendi**.

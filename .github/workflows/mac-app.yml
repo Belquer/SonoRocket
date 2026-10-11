@@ -14,6 +14,9 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: write   # create the release
+
 jobs:
   build:
     runs-on: macos-14
@@ -103,3 +106,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.zip
+          body_path: sonorocket/macos/COMO-USAR.md

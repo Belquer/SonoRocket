@@ -36,7 +36,8 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
   codesign --verify --deep --strict "$APP"
 fi
 
-ZIP="$OUT/SonoRocket-$VERSION-mac.zip"
+# fixed name, so ".../releases/latest/download/SonoRocket-mac.zip" is a permanent link
+ZIP="$OUT/SonoRocket-mac.zip"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
