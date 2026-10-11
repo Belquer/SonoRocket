@@ -3,7 +3,7 @@
 // against the deterministic test signal, bit for bit.
 // usage: node listen-verify.js --url ws://127.0.0.1:8080 --room test --frames 480000
 'use strict';
-const WebSocket = require('../relay/node_modules/ws');
+const WebSocket = require('ws');
 const { crc32, testSignal } = require('./rkt');
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? process.argv[i + 1] : d; };

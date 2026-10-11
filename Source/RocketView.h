@@ -1,4 +1,5 @@
-// SonoRocket: settings + status panel for browser streaming.
+// SonoRocket: browser streaming panel. Simple by default (status, link, share),
+// with the technical fields tucked under "Avançado".
 #pragma once
 
 #include <JuceHeader.h>
@@ -12,21 +13,30 @@ public:
 
     void resized() override;
     void paint (Graphics& g) override;
-    int getPreferredHeight() const { return 372; }
+    int getPreferredHeight() const { return showAdvanced ? 470 : 268; }
+
+    std::function<void()> onPreferredHeightChanged;
 
 private:
     void timerCallback() override;
     void loadFromConfig();
     void applyToConfig (bool enabledOverride, bool enabledValue);
     String listenerLink() const;
+    void setAdvancedVisible (bool show);
 
     SonobusAudioProcessor& processor;
+    bool showAdvanced = false;
+    Colour statusColour { Colours::grey };
 
-    Label title, hostLabel, portLabel, roomLabel, keyLabel, urlLabel, statusLabel, linkLabel, hint;
+    Label title, statusLabel, linkLabel, detailLabel;
+    TextButton copyButton { "Copiar link" };
+    TextButton whatsappButton { "Mandar no WhatsApp" };
+    TextButton streamButton { "Parar" };
+    TextButton advancedButton { "Avançado" };
+
+    // advanced
+    Label hostLabel, portLabel, roomLabel, keyLabel, urlLabel;
     TextEditor hostEdit, portEdit, roomEdit, keyEdit, urlEdit;
-    TextButton newRoomButton { TRANS("New") };
-    TextButton streamButton { TRANS("Start streaming") };
-    TextButton copyButton { TRANS("Copy listener link") };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RocketView)
 };

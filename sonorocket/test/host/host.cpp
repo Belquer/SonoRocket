@@ -48,7 +48,7 @@ int main (int argc, char** argv)
         inst->setStateInformation (nb.getData(), (int) nb.getSize());
         return tree;
     };
-    editState ([&] (juce::ValueTree& tree) {
+    if (room != "default") editState ([&] (juce::ValueTree& tree) {
         auto extra = tree.getOrCreateChildWithName ("ExtraState", nullptr);
         extra.setProperty ("RocketHost", "127.0.0.1", nullptr);
         extra.setProperty ("RocketPort", 9100, nullptr);

@@ -3092,6 +3092,13 @@ void SonobusAudioProcessorEditor::showRocketView(bool show)
         Component* dw = this;
         if (!mRocketView) {
             mRocketView = std::make_unique<RocketView>(processor);
+            mRocketView->onPreferredHeightChanged = [this] {
+                // reopen at the new size ("Avançado" toggled)
+                showRocketView(false);
+                MessageManager::callAsync([sp = Component::SafePointer<SonobusAudioProcessorEditor>(this)] {
+                    if (sp) sp->showRocketView(true);
+                });
+            };
         }
         const int w = jmin(440, dw->getWidth() - 10);
         const int h = mRocketView->getPreferredHeight();
@@ -3107,9 +3114,11 @@ void SonobusAudioProcessorEditor::showRocketView(bool show)
     }
     else if (!show) {
         if (CallOutBox * box = dynamic_cast<CallOutBox*>(rocketCalloutBox.get())) {
+            if (mRocketView) mRocketView->setVisible(false);
+            if (auto * vp = dynamic_cast<Viewport*>(box->getChildComponent(0))) vp->setViewedComponent(nullptr, false);
             box->dismiss();
-            rocketCalloutBox = nullptr;
         }
+        rocketCalloutBox = nullptr;
     }
 }
 

@@ -24,9 +24,9 @@ public:
     struct Config {
         juce::String host { "127.0.0.1" };
         int port { 9100 };
-        juce::String room;
+        juce::String room { "auto" };      // "auto": the relay picks the room and reports the link
         juce::String key;
-        bool enabled { false };
+        bool enabled { true };               // zero-config: streams as soon as a relay is reachable
         juce::String listenUrl;   // public base URL of the relay page, for the share link (UI only)
     };
 
@@ -49,6 +49,7 @@ public:
     int64_t getFramesSent() const noexcept    { return framesSent.load(); }
     int64_t getFramesDropped() const noexcept { return framesDropped.load(); }
     double getFifoSeconds() const noexcept;
+    juce::String getListenerLink() const;    // link reported by the relay (empty until known)
 
     static constexpr int kBlockFrames  = 1024;
     static constexpr double kFifoSeconds = 20.0;
@@ -62,6 +63,8 @@ private:
     bool sendAll (const void* data, int size);
     bool sendFormatChange();
     void disconnect (const juce::String& why, State newState);
+    void pollRelayMessages();
+    void setLink (const juce::String& l);
 
     mutable juce::CriticalSection configLock;
     Config config;
@@ -78,9 +81,14 @@ private:
     std::atomic<int> formatGeneration { 0 };
     int sentFormatGeneration = -1;
 
+    // Only the network thread creates or destroys `socket`. Other threads may only
+    // interrupt it (shutdown) while holding socketLock; they never close or delete it.
     std::unique_ptr<juce::StreamingSocket> socket;
+    juce::CriticalSection socketLock;
+    void interruptSocket();
     std::atomic<State> state { State::Off };
-    juce::String lastError;
+    juce::String lastError, relayLink;
+    juce::String relayLineBuf;
     mutable juce::CriticalSection errorLock;
 
     uint32_t seq = 0;

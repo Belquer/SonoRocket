@@ -2,7 +2,9 @@
 
 #include "RocketStreamer.h"
 
-#if ! JUCE_WINDOWS
+#if JUCE_WINDOWS
+ #include <winsock2.h>
+#else
  #include <sys/types.h>
  #include <sys/socket.h>
 #endif
@@ -66,17 +68,34 @@ RocketStreamer::RocketStreamer()
 
 RocketStreamer::~RocketStreamer()
 {
+    // Never close the socket from here: the network thread may be inside a call on it.
+    // Shut it down (unblocks any read/write), then let the thread clean up and exit.
     signalThreadShouldExit();
     notify();
-    if (socket) socket->close();
-    stopThread (4000);
+    interruptSocket();
+    stopThread (6000);
+}
+
+void RocketStreamer::interruptSocket()
+{
+    const juce::ScopedLock sl (socketLock);
+    if (socket != nullptr && socket->getRawSocketHandle() >= 0) {
+       #if JUCE_WINDOWS
+        ::shutdown ((SOCKET) socket->getRawSocketHandle(), SD_BOTH);
+       #else
+        ::shutdown (socket->getRawSocketHandle(), SHUT_RDWR);
+       #endif
+    }
 }
 
 void RocketStreamer::setConfig (const Config& c)
 {
     {
         const juce::ScopedLock sl (configLock);
+        const bool same = c.host == config.host && c.port == config.port && c.room == config.room
+                       && c.key == config.key && c.enabled == config.enabled;
         config = c;
+        if (same) return;   // UI-only change (or a session reload): don't drop the connection
     }
     ++configGeneration;
     notify();
@@ -149,9 +168,42 @@ juce::String RocketStreamer::getStatusText() const
     return {};
 }
 
+juce::String RocketStreamer::getListenerLink() const
+{
+    const juce::ScopedLock sl (errorLock);
+    return relayLink;
+}
+
+void RocketStreamer::setLink (const juce::String& l)
+{
+    const juce::ScopedLock sl (errorLock);
+    relayLink = l;
+}
+
+void RocketStreamer::pollRelayMessages()
+{
+    // The relay may push "LINK <url>\n" when its public tunnel comes up or changes.
+    while (socket && socket->waitUntilReady (true, 0) == 1) {
+        char buf[512];
+        const int n = socket->read (buf, (int) sizeof (buf), false);
+        if (n <= 0) { disconnect ("connection lost", State::Error); return; }
+        relayLineBuf += juce::String::fromUTF8 (buf, n);
+        int nl;
+        while ((nl = relayLineBuf.indexOfChar ('\n')) >= 0) {
+            const auto line = relayLineBuf.substring (0, nl).trim();
+            relayLineBuf = relayLineBuf.substring (nl + 1);
+            if (line.startsWith ("LINK ")) setLink (line.substring (5).trim());
+        }
+        if (relayLineBuf.length() > 8192) relayLineBuf.clear();
+    }
+}
+
 void RocketStreamer::disconnect (const juce::String& why, State newState)
 {
-    if (socket) { socket->close(); socket.reset(); }
+    {
+        const juce::ScopedLock sl (socketLock);
+        if (socket) { socket->close(); socket.reset(); }
+    }
     {
         const juce::ScopedLock sl (errorLock);
         lastError = why;
@@ -187,9 +239,12 @@ bool RocketStreamer::connectAndHandshake()
     connectedGeneration = configGeneration.load();
     state = State::Connecting;
 
-    if (c.room.isEmpty()) { disconnect ("set a room name", State::Error); return false; }
 
-    socket = std::make_unique<juce::StreamingSocket>();
+    {
+        const juce::ScopedLock sl (socketLock);
+        socket = std::make_unique<juce::StreamingSocket>();
+    }
+    if (threadShouldExit()) { disconnect ({}, State::Off); return false; }
     if (! socket->connect (c.host, c.port, 4000)) {
         disconnect ("can't reach " + c.host + ":" + juce::String (c.port), State::Error);
         return false;
@@ -203,7 +258,7 @@ bool RocketStreamer::connectAndHandshake()
 
     auto* obj = new juce::DynamicObject();
     obj->setProperty ("v", 1);
-    obj->setProperty ("room", c.room);
+    obj->setProperty ("room", c.room.isEmpty() ? juce::String ("auto") : c.room);
     obj->setProperty ("key", c.key);
     obj->setProperty ("sr", (int) sampleRate.load());
     obj->setProperty ("ch", channels.load());
@@ -224,7 +279,7 @@ bool RocketStreamer::connectAndHandshake()
         if (socket->read (&ch, 1, false) != 1) { disconnect ("relay closed", State::Error); return false; }
         if (ch == '\n') break;
         reply += ch;
-        if (reply.length() > 256) break;
+        if (reply.length() > 4096) break;
     }
     if (! reply.startsWith ("OK")) {
         disconnect (reply.fromFirstOccurrenceOf ("ERR ", false, false).trim().isNotEmpty()
@@ -232,6 +287,13 @@ bool RocketStreamer::connectAndHandshake()
                         : juce::String ("rejected by relay"), State::Error);
         return false;
     }
+
+    // "OK {json}" carries the room the relay chose and the public listener link
+    {
+        const auto js = juce::JSON::parse (reply.fromFirstOccurrenceOf ("OK", false, false).trim());
+        setLink (js.getProperty ("link", juce::var()).toString());
+    }
+    relayLineBuf.clear();
 
     // Start clean: nothing queued from before this session.
     fifo->finishedRead (fifo->getNumReady());
@@ -278,7 +340,7 @@ void RocketStreamer::run()
         if (! socket) {
             if (! connectAndHandshake()) {
                 wait (backoffMs);
-                backoffMs = juce::jmin (backoffMs * 2, 8000);
+                backoffMs = juce::jmin (backoffMs * 2, 3000);
             }
             continue;
         }
@@ -305,6 +367,8 @@ void RocketStreamer::run()
             if (ok) framesSent += kBlockFrames;
         }
         if (! ok) { disconnect ("connection lost", State::Error); continue; }
+
+        pollRelayMessages();
 
         if (juce::Time::getMillisecondCounter() - lastSendMs > 2000) {
             const uint8_t ka[5] = { 1, 0, 0, 0, 3 };
