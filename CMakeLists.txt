@@ -667,6 +667,9 @@ target_compile_definitions(SonoRocketCapture PRIVATE
     JUCE_WASAPI=1
     JUCE_DIRECTSOUND=1
     JUCE_DISPLAY_SPLASH_SCREEN=0)
+if (UNIX AND NOT APPLE)
+    target_compile_definitions(SonoRocketCapture PRIVATE JUCE_JACK=1)
+endif()
 target_link_libraries(SonoRocketCapture PRIVATE
     juce::juce_audio_utils
     juce::juce_recommended_config_flags

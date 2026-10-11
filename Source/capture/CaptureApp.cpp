@@ -165,7 +165,12 @@ public:
     MainComponent()
     {
         PropertiesFile::Options o;
-        o.applicationName = "SonoRocket"; o.folderName = "SonoRocket"; o.filenameSuffix = "settings";
+        o.applicationName = "SonoRocket"; o.filenameSuffix = "settings";
+       #if JUCE_LINUX
+        o.folderName = ".config/SonoRocket";
+       #else
+        o.folderName = "SonoRocket";
+       #endif
         o.osxLibrarySubFolder = "Application Support";
         props = std::make_unique<PropertiesFile> (o);
 

@@ -11,6 +11,7 @@ const url = arg('url', 'ws://127.0.0.1:8080'), room = arg('room', 'test');
 const expectFrames = +arg('frames', 0);
 const refPath = arg('ref'); // compare against a raw float32 file instead of the JS generator
 let ref = null, refOff = 0;
+const align = process.argv.includes('--align');
 
 let ch = 2, gen = null, frames = 0, blocks = 0, crcBad = 0, mismatches = 0, gaps = 0, lastSeq = null;
 const exp = new Float32Array(1), expU = new Uint32Array(exp.buffer);
@@ -28,10 +29,18 @@ ws.on('message', (data, isBinary) => {
   const pcm = b.subarray(13);
   if (crc32(pcm) !== crc) crcBad++;
   if (lastSeq !== null && seq !== lastSeq + 1) gaps++;
-  if (lastSeq === null && seq !== 0) { console.error(`joined mid-stream at seq ${seq}; start the listener first`); process.exit(2); }
+  if (lastSeq === null && seq !== 0 && !align) { console.error(`joined mid-stream at seq ${seq}; start the listener first`); process.exit(2); }
   lastSeq = seq;
   if (refPath) {
     if (!ref) ref = require('fs').readFileSync(refPath);   // read late: the sender writes it as it goes
+    if (align && blocks === 0) {
+      // live capture: the stream starts somewhere inside the reference; find it by exact bytes
+      ref = require('fs').readFileSync(refPath);
+      const probe = pcm.subarray(0, 64);
+      refOff = ref.indexOf(probe);
+      if (refOff < 0 || refOff % 4) { console.error('could not align stream to reference'); process.exit(3); }
+      console.log('aligned at sample', refOff / 4);
+    }
     const want = ref.subarray(refOff, refOff + pcm.length);
     if (want.length < pcm.length) ref = require('fs').readFileSync(refPath);
     for (let i = 0; i < pcm.length; i += 4) if (pcm.readUInt32LE(i) !== ref.readUInt32LE(refOff + i)) mismatches++;
