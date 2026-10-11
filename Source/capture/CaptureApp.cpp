@@ -272,7 +272,7 @@ public:
         tip.setMinimumHorizontalScale (1.0f);   // wrap instead of squeezing
         addAndMakeVisible (tip);
 
-        setSize (560, 720);
+        setSize (560, 660);   // fits 1366x768 laptops with the taskbar
         startTimerHz (10);
         trace ("ui: ready");
     }
@@ -405,6 +405,7 @@ private:
         else if (! enabled)                         { s = "Desligado"; col = kDim; }
         else if (st != State::Streaming)            { s = "Conectando..."; }
         else if (! publicLink)                      { s = u8 ("AO VIVO · gerando link público…"); }
+        else if (deviceManager.getCurrentAudioDevice() == nullptr) { s = u8 ("Escolha a entrada de áudio aqui embaixo"); }
         else if (heldPeak[0] < 1e-6f && heldPeak[1] < 1e-6f) { s = u8 ("AO VIVO · sem sinal na entrada"); }
         else                                        { s = "AO VIVO"; col = kGreen; }
 
@@ -469,7 +470,7 @@ private:
             setUsingNativeTitleBar (true);
             setContentOwned (new MainComponent(), true);
             setResizable (true, false);
-            setResizeLimits (480, 640, 900, 1200);
+            setResizeLimits (480, 600, 900, 1200);
             centreWithSize (getWidth(), getHeight());
             setVisible (true);
         }
