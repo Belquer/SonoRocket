@@ -48,7 +48,11 @@
   .stat strong { display: block; font: 700 18px var(--mono); }
   .stat span { color: var(--dim); font-size: 11px; }
   .hidden { display: none !important; }
-  footer { color: var(--dim); font-size: 12px; text-align: center; }
+  footer { color: var(--dim); font-size: 12px; text-align: center; display: grid; gap: 4px; }
+  .sig { font-family: var(--mono); color: var(--text); letter-spacing: 0.02em; }
+  .sig b { color: var(--hot); font-weight: 700; }
+  .vol .row { align-items: baseline; }
+  .vol button.ghost { flex: 0 0 auto; width: auto; padding: 6px 12px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -70,6 +74,15 @@
     <span class="chip" id="cFormat">formato: —</span>
     <span class="chip" id="cRate">saída: —</span>
     <span class="chip" id="cBits">integridade: —</span>
+    <span class="chip ok" id="cVol">volume: 0 dB (sem ganho)</span>
+  </section>
+
+  <section class="panel vol">
+    <div class="row">
+      <div><div class="sub">volume (só no seu aparelho)</div><div class="big" id="volLabel">0.0 dB</div></div>
+      <button class="ghost" id="volReset" title="Volta a 0 dB, saída bit a bit">0 dB</button>
+    </div>
+    <input type="range" id="vol" min="-40" max="12" step="0.5" value="0" style="margin-top:10px" aria-label="Volume">
   </section>
 
   <section class="panel meters">
@@ -96,7 +109,10 @@
     <button class="ghost" id="copyBtn">Copiar link</button>
   </div>
 
-  <footer>PCM float32 sem compressão · cada bloco verificado por CRC32</footer>
+  <footer>
+    <span>PCM float32 sem compressão · cada bloco verificado por CRC32 · medidores mostram o sinal recebido (antes do volume)</span>
+    <span class="sig">SonoRocket by Belquer <b>dB</b> &gt;¡&lt; 2026</span>
+  </footer>
 </main>
 
 <script>
@@ -135,6 +151,7 @@ async function buildAudio(sr, ch) {
   node.__ch = ch;
   node.connect(ctx.destination);
   node.port.postMessage({ type: 'target', seconds: +$('bufTarget').value });
+  node.port.postMessage({ type: 'gain', value: volGain() });
   node.port.onmessage = (e) => showStatus(e.data);
   const native = ctx.sampleRate === sr;
   chip('cRate', native ? `saída: ${ctx.sampleRate} Hz nativo` : `saída: ${ctx.sampleRate} Hz (browser reamostra)`, native ? 'ok' : 'warn');
@@ -215,6 +232,23 @@ $('bufTarget').oninput = () => {
   localStorageSet('rocket.target', v);
   node && node.port.postMessage({ type: 'target', seconds: v });
 };
+// ---------- listener volume ----------
+// 0 dB = gain exactly 1 = untouched samples. Snaps to 0 within ±0.5 dB.
+function volGain() { const d = +$('vol').value; return d === 0 ? 1 : Math.pow(10, d / 20); }
+function applyVol(save) {
+  let d = +$('vol').value;
+  if (Math.abs(d) <= 0.5) { d = 0; $('vol').value = 0; }
+  $('volLabel').textContent = (d > 0 ? '+' : '') + d.toFixed(1) + ' dB';
+  if (d === 0) chip('cVol', 'volume: 0 dB (sem ganho)', 'ok');
+  else chip('cVol', `volume: ${(d > 0 ? '+' : '') + d.toFixed(1)} dB · fora do bit a bit`, d > 0 ? 'warn' : '');
+  if (save) localStorageSet('rocket.vol', d);
+  node && node.port.postMessage({ type: 'gain', value: volGain() });
+}
+{ const v = localStorageGet('rocket.vol'); if (v !== null && isFinite(+v)) $('vol').value = +v; applyVol(false); }
+$('vol').oninput = () => applyVol(true);
+$('volReset').onclick = () => { $('vol').value = 0; applyVol(true); };
+$('vol').ondblclick = () => { $('vol').value = 0; applyVol(true); };
+
 $('resyncBtn').onclick = () => { node && node.port.postMessage({ type: 'flush' }); };
 $('copyBtn').onclick = async () => {
   const link = location.origin + location.pathname + '?room=' + encodeURIComponent(roomName || $('roomInput').value.trim());

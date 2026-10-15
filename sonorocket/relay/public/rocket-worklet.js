@@ -1,7 +1,9 @@
 // SonoRocket playback worklet.
 // Samples come in exactly as sent and go out exactly as received:
-// no resampling, no interpolation, no gain. Underruns produce silence and
-// a rebuffer, never a "concealed" or stretched sample.
+// no resampling, no interpolation. Underruns produce silence and a rebuffer,
+// never a "concealed" or stretched sample.
+// Listener volume: at 0 dB (gain exactly 1) the multiply is skipped, so the
+// output stays bit-exact. Any other setting is a deliberate, smoothed gain.
 
 class RocketPlayer extends AudioWorkletProcessor {
   constructor(options) {
@@ -19,6 +21,8 @@ class RocketPlayer extends AudioWorkletProcessor {
     this.peak = new Float32Array(this.ch);
     this.overs = 0;
     this.lastReport = 0;
+    this.gain = 1; this.gainTarget = 1;
+    this.gainCoef = 1 - Math.exp(-1 / (0.02 * sampleRate)); // ~20 ms glide, no zipper
     this.port.onmessage = (e) => this.onMsg(e.data);
   }
 
@@ -41,6 +45,8 @@ class RocketPlayer extends AudioWorkletProcessor {
       this.playing = false; // rebuffer to the new depth
     } else if (m.type === 'flush') {
       this.w = this.r = this.fill = 0; this.playing = false;
+    } else if (m.type === 'gain') {
+      this.gainTarget = m.value;
     } else if (m.type === 'pause') {
       this.paused = !!m.value;
     }
@@ -52,11 +58,13 @@ class RocketPlayer extends AudioWorkletProcessor {
     if (!this.playing && !this.paused && this.fill >= this.target) this.playing = true;
 
     if (this.playing && !this.paused && this.fill >= n) {
-      let r = this.r;
+      let r = this.r, g = this.gain;
+      const gt = this.gainTarget, k = this.gainCoef;
       for (let i = 0; i < n; i++) {
+        if (g !== gt) { g += (gt - g) * k; if (Math.abs(gt - g) < 1e-6) g = gt; }
         for (let o = 0; o < out.length; o++) {
           const s = this.buf[Math.min(o, this.ch - 1)][r];
-          out[o][i] = s;
+          out[o][i] = g === 1 ? s : s * g;
           const a = s < 0 ? -s : s;
           const c = Math.min(o, this.ch - 1);
           if (a > this.peak[c]) this.peak[c] = a;
@@ -64,7 +72,7 @@ class RocketPlayer extends AudioWorkletProcessor {
         }
         if (++r === this.cap) r = 0;
       }
-      this.r = r; this.fill -= n;
+      this.r = r; this.fill -= n; this.gain = g;
     } else {
       for (let o = 0; o < out.length; o++) out[o].fill(0);
       if (this.playing && !this.paused) { this.playing = false; this.underruns++; }
