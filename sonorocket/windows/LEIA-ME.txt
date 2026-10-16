@@ -29,8 +29,9 @@ TALKBACK (falar com o dB sem os 2 segundos de atraso)
      (Primeiro escolha a saída da placa lá embaixo, em "Output".)
 3. Pronto:
    - Pro Tools parado: o microfone fica aberto, é só falar.
-   - Pro Tools tocando: segure a tecla T (com a janela do SonoRocket na frente),
-     o botão "Segure para falar" ou um pedal MIDI ligado neste PC.
+   - Pro Tools tocando: segure Ctrl+T (funciona de qualquer janela deste PC),
+     ou T com a janela do SonoRocket na frente, o botão "Segure para falar"
+     ou um pedal ligado neste PC (pedal MIDI, ou pedal USB programado como Ctrl+T).
    O som das caixas que vaza no microfone é cancelado automaticamente.
    Pode desligar o áudio do Google Meet.
 

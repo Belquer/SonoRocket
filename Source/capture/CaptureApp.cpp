@@ -327,7 +327,7 @@ public:
         styleButton (talkBtn, kLine, kText);
         talkBtn.setTriggeredOnMouseDown (false);
         addAndMakeVisible (talkBtn);
-        talkHint.setText (u8 ("Com a DAW parada o microfone fica aberto. Tocando: segure T (com esta janela na frente), o botão acima ou um pedal MIDI."), dontSendNotification);
+        talkHint.setText (u8 ("Com a DAW parada o microfone fica aberto. Tocando: segure T (janela na frente), Ctrl+T (de qualquer lugar do PC), o botão acima ou um pedal MIDI."), dontSendNotification);
         talkHint.setColour (Label::textColourId, kDim);
         talkHint.setFont (Font (12.0f));
         talkHint.setMinimumHorizontalScale (1.0f);
@@ -566,7 +566,15 @@ private:
         const auto now = Time::getMillisecondCounter();
         if (dawLoud.exchange (false)) lastLoudMs = now;
         const bool playing = now - lastLoudMs < kPlayingHoldMs;
-        const bool keyT = Process::isForegroundProcess() && KeyPress::isKeyCurrentlyDown ('t');
+        // T with this window in front, or Ctrl+T from anywhere on this computer
+        // (polled, so it works whatever app has the focus)
+        const bool tDown = KeyPress::isKeyCurrentlyDown ('t');
+       #if JUCE_WINDOWS
+        const bool ctrl = KeyPress::isKeyCurrentlyDown (0x11);   // VK_CONTROL via GetAsyncKeyState: global, unlike the modifier cache
+       #else
+        const bool ctrl = ModifierKeys::getCurrentModifiersRealtime().isCtrlDown();
+       #endif
+        const bool keyT = tDown && (Process::isForegroundProcess() || ctrl);
         const bool ptt = keyT || talkBtn.held() || midiNotes.load() > 0 || midiPedal.load();
         const bool haveMic = micChannel.load() >= 0 && micChannel.load() < devIns;
         talkback.setMicOpen (haveMic && streamer.getState() == State::Streaming && (! playing || ptt));
@@ -577,12 +585,12 @@ private:
         String s; Colour c = kDim;
         if (! haveMic)                    s = u8 ("Escolha a entrada do microfone");
         else if (talkback.isSending())    { s = playing ? u8 ("● falando (segurando)") : u8 ("● mic aberto · DAW parada"); c = kGreen; }
-        else if (playing)                 { s = u8 ("DAW tocando · segure T para falar"); c = kAmber; }
+        else if (playing)                 { s = u8 ("DAW tocando · segure T ou Ctrl+T para falar"); c = kAmber; }
         else                              s = u8 ("mic fechado");
         if (talkback.takeVoicePeak() > 0.003f) { s << u8 ("  ·  dB falando"); c = kOrange; }
         talkState.setText (s, dontSendNotification);
         talkState.setColour (Label::textColourId, c);
-        talkBtn.setButtonText (talkback.isSending() && ptt ? "Falando..." : "Segure para falar (T)");
+        talkBtn.setButtonText (talkback.isSending() && ptt ? "Falando..." : "Segure para falar (Ctrl+T)");
     }
     void saveAudioState()
     {
@@ -668,7 +676,7 @@ private:
     Label talkTitle, masterLab, micLab, outLab, volLab, talkState, talkHint;
     ComboBox masterBox, micBox, outBox;
     Slider talkVol;
-    HoldButton talkBtn { "Segure para falar (T)" };
+    HoldButton talkBtn { "Segure para falar (Ctrl+T)" };
     TextButton copyBtn { "Copiar link" }, whatsBtn { "Mandar no WhatsApp" }, streamBtn { "Parar" };
     juce::Rectangle<int> inputPanel, sharePanel, talkPanel;
 
