@@ -28,6 +28,7 @@ TALKBACK (falar com o dB sem os 2 segundos de atraso)
      "Outros dispositivos": o Windows costuma mostrar cada par de entradas da placa
      como um dispositivo separado (ex.: "Entradas 3-4 (sua placa) · canal 1").
    - Voz do dB sai em: o fone ou a caixinha onde você quer ouvir o dB.
+     Clique em "Testar": tem que soar um bip ali. Se não soar, escolha outro.
 3. Pronto:
    - Pro Tools parado: o microfone fica aberto, é só falar.
    - Pro Tools tocando: segure Ctrl+T (funciona de qualquer janela deste PC),

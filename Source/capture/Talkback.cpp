@@ -302,6 +302,18 @@ void Talkback::feedPlayback()
             s.q.erase (s.q.begin(), s.q.begin() + kFrame);
             any = true;
         }
+        if (const int left = testTone.load(); left > 0) {   // test chime: two notes, 0.5 s
+            const int total = kRate / 2;
+            for (int k = 0; k < kFrame; ++k) {
+                const int t = total - (left - k);
+                const double f = t < total / 2 ? 660.0 : 880.0;
+                const float env = std::sin (juce::MathConstants<float>::pi * (float) (t % (total / 2)) / (float) (total / 2));
+                tonePhase += 2.0 * juce::MathConstants<double>::pi * f / kRate;
+                mix[k] += 0.3f * env * (float) std::sin (tonePhase);
+            }
+            testTone = juce::jmax (0, left - kFrame);
+            any = true;
+        }
         if (! any) break;
 
         spx_uint32_t inLen = kFrame;

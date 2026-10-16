@@ -54,6 +54,7 @@ public:
     float takeMicPeak() noexcept               { return micPeak.exchange (0.0f); }   // after echo cancel
     float takeVoicePeak() noexcept             { return voicePeak.exchange (0.0f); } // listener talking
     bool isSending() const noexcept            { return sending.load(); }
+    void playTestTone() noexcept               { testTone = kRate / 2; }   // a short chime on the output, to find the right device
 
     static constexpr int kRate = RocketStreamer::kVoiceRate;
     static constexpr int kFrame = 160;               // 10 ms at 16 kHz
@@ -95,6 +96,8 @@ private:
 
     std::atomic<bool> micOpen { false }, ptt { false }, sending { false }, outReady { false };
     std::atomic<juce::uint32> lastVoiceMs { 0 };
+    std::atomic<int> testTone { 0 };
+    double tonePhase = 0;
     std::atomic<float> playbackGain { 1.0f }, micGain { 1.0f };
     std::atomic<float> micPeak { 0.0f }, voicePeak { 0.0f };
 

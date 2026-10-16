@@ -352,6 +352,9 @@ public:
         talkVol.setColour (Slider::trackColourId, kOrange.withAlpha (0.5f));
         talkVol.onValueChange = [this] { talkback.setPlaybackGain (Decibels::decibelsToGain ((float) talkVol.getValue())); props->setValue ("talkVol", talkVol.getValue()); };
         addAndMakeVisible (talkVol);
+        styleButton (testBtn, kLine, kText);
+        testBtn.onClick = [this] { talkback.playTestTone(); trace ("talkback out: test tone"); };
+        addAndMakeVisible (testBtn);
         addAndMakeVisible (micMeter);
         talkState.setFont (Font (15.0f, Font::bold));
         addAndMakeVisible (talkState);
@@ -435,7 +438,7 @@ public:
             row (masterLab, masterBox);
             row (micLab, micBox);
             { auto r = t.removeFromTop (8); micMeter.setBounds (r.withTrimmedLeft (130).reduced (0, 1)); t.removeFromTop (4); }
-            row (outLab, outBox);
+            { auto r = t.removeFromTop (26); outLab.setBounds (r.removeFromLeft (130)); testBtn.setBounds (r.removeFromRight (70)); r.removeFromRight (6); outBox.setBounds (r); t.removeFromTop (4); }
             row (volLab, talkVol);
             auto last = t.removeFromTop (36);
             talkBtn.setBounds (last.removeFromRight (200));
@@ -868,6 +871,7 @@ private:
     Label talkTitle, masterLab, micLab, outLab, volLab, talkState, talkHint;
     ComboBox masterBox, micBox, outBox;
     Slider talkVol;
+    TextButton testBtn { "Testar" };
     HoldButton talkBtn { "Segure para falar (Ctrl+T)" };
     TextButton copyBtn { "Copiar link" }, whatsBtn { "WhatsApp" }, streamBtn { "Parar" }, videoBtn { u8 ("Vídeo") };
     juce::Rectangle<int> inputPanel, sharePanel, talkPanel;

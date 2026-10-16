@@ -58,7 +58,7 @@
   .tstate.open { color: var(--ok); } .tstate.wait { color: var(--warn); }
   #talkBtn { background: var(--panel); color: var(--text); border: 1px solid var(--line); user-select: none; -webkit-user-select: none;
              touch-action: none; -webkit-touch-callout: none; }
-  #talkBtn.on { background: var(--ok); color: var(--bg); border-color: var(--ok); }
+  #talkBtn.on { background: var(--bad); color: var(--bg); border-color: var(--bad); }
   .mini { height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; }
   .mini i { display: block; height: 100%; width: 0; background: var(--ok); }
   kbd { font: 12px var(--mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; }
@@ -159,7 +159,7 @@
         <div class="line">
           <button class="ghost tiny" id="talkEnable">Ativar microfone</button>
           <label class="phones" title="De fone, a voz vai limpa, sem cancelamento de eco, supressão de ruído nem controle de ganho do navegador"><input type="checkbox" id="phones"> fone</label>
-          <button id="talkBtn" class="hidden">Segure para falar · <kbd>T</kbd></button>
+          <button id="talkBtn" class="hidden" title="Clique para ligar/desligar o mudo; segurando T fica mudo enquanto segura">Mudo · segure <kbd>T</kbd></button>
         </div>
         <div class="mini"><i id="micBar"></i></div>
         <div class="line">
@@ -274,6 +274,7 @@ function connect() {
         chip('cSender', m.online ? 'emissor: ao vivo' : 'emissor: offline', m.online ? 'ok' : 'warn');
         talkAvail = !!(m.online && m.talk);
         $('talkPanel').classList.toggle('hidden', !talkAvail);
+        if (talkAvail && wantPlay && !micStream && !micTried) enableMic();
       }
       if (m.type === 'format' && !STUDIO) {
         format = m; lastSeq = null;
@@ -341,6 +342,7 @@ $('playBtn').onclick = async () => {
   try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {}  // iOS: ignore the silent switch
   if (!ws) connect();
   if (ctx) { if (wantPlay) await ctx.resume(); node && node.port.postMessage({ type: 'pause', value: !wantPlay }); }
+  if (wantPlay && talkAvail && !micStream && !micTried) enableMic();   // the mic just comes on with Ouvir
   if (wantPlay && 'wakeLock' in navigator) { try { wakeLock = await navigator.wakeLock.request('screen'); } catch {} }
   else if (wakeLock) { wakeLock.release(); wakeLock = null; }
 };
@@ -421,19 +423,36 @@ $('phones').onchange = async () => {
   try { micStream = await openMic(); if (ctx) await attachMic(); } catch { micStream = null; }
 };
 
+// The listener's mic is open whenever it's on (the studio controls playback); muting
+// is the exception: the Mudo button, or hold T to stay muted while it's held.
+let micError = '', muted = false, micTried = false;
+function micErrorText(err) {
+  const n = err && err.name;
+  if (n === 'NotAllowedError' || n === 'SecurityError') return 'microfone bloqueado: libere no cadeado ao lado do endereço e em Ajustes do Sistema › Privacidade › Microfone › Chrome';
+  if (n === 'NotFoundError' || n === 'OverconstrainedError') return 'nenhum microfone encontrado';
+  if (n === 'NotReadableError') return 'o microfone está em uso por outro app';
+  return 'não consegui abrir o microfone' + (n ? ' (' + n + ')' : '');
+}
+async function enableMic() {
+  micTried = true;
+  try { micStream = await openMic(); }
+  catch (err) {
+    try { micStream = await navigator.mediaDevices.getUserMedia({ audio: true }); }   // simplest possible request
+    catch (err2) { micStream = null; micError = micErrorText(err2 || err); console.error('mic', err, err2); return; }
+  }
+  micError = '';
+  try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch {}
+  $('talkEnable').textContent = 'Desligar microfone'; $('talkBtn').classList.remove('hidden');
+  if (!ws) connect();
+  if (ctx) { await ctx.resume(); await attachMic(); }
+}
 $('talkEnable').onclick = async () => {
   if (micStream) {   // turn off
     micStream.getTracks().forEach((t) => t.stop()); micStream = null; detachMic();
     $('talkEnable').textContent = 'Ativar microfone'; $('talkBtn').classList.add('hidden');
     return;
   }
-  try {
-    micStream = await openMic();
-  } catch (err) { $('talkState').textContent = 'sem permissão para o microfone'; return; }
-  try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch {}
-  $('talkEnable').textContent = 'Desligar microfone'; $('talkBtn').classList.remove('hidden');
-  if (!ws) connect();
-  if (ctx) { await ctx.resume(); await attachMic(); }
+  await enableMic();
 };
 
 $('talkVol').value = +localStorageGet('rocket.talkVol') || 0;
@@ -442,26 +461,28 @@ showTalkVol();
 $('talkVol').oninput = () => { showTalkVol(); localStorageSet('rocket.talkVol', +$('talkVol').value); voiceNode && voiceNode.port.postMessage({ type: 'gain', value: talkGain() }); };
 
 const tb = $('talkBtn');
-tb.addEventListener('pointerdown', (e) => { pttBtn = true; try { tb.setPointerCapture(e.pointerId); } catch {} e.preventDefault(); });
-['pointerup', 'pointercancel', 'lostpointercapture'].forEach((ev) => tb.addEventListener(ev, () => { pttBtn = false; }));
-tb.addEventListener('contextmenu', (e) => e.preventDefault());
+tb.addEventListener('click', () => { muted = !muted; });
 const typing = (e) => /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && e.target.type !== 'range';
-addEventListener('keydown', (e) => { if (e.code === 'KeyT' && !typing(e)) { e.preventDefault(); pttKey = true; } });
+addEventListener('keydown', (e) => { if (e.code === 'KeyT' && !e.metaKey && !e.ctrlKey && !typing(e)) { e.preventDefault(); pttKey = true; } });
 addEventListener('keyup', (e) => { if (e.code === 'KeyT') pttKey = false; });
 addEventListener('blur', () => { pttKey = false; pttBtn = false; });
 
 setInterval(() => {
-  const playing = performance.now() - lastLoud < HOLD_MS;
-  const ptt = pttKey || pttBtn;
+  const mute = muted || pttKey;
   const ready = !!(micNode && talkAvail && ws && ws.readyState === 1);
-  const open = ready && (!playing || ptt);
+  const open = ready && !mute;
   if (micNode && open !== micOpenSent) { micNode.port.postMessage({ type: 'open', value: open }); micOpenSent = open; }
   const st = $('talkState');
-  if (!micStream) { st.textContent = 'microfone desligado'; st.className = 'tstate'; }
+  st.title = '';
+  if (micError) { st.textContent = micError; st.title = micError; st.className = 'tstate wait'; }
+  else if (!micStream) { st.textContent = 'microfone desligado'; st.className = 'tstate'; }
+  else if (!ctx) { st.textContent = 'aperte Ouvir para conectar'; st.className = 'tstate'; }
   else if (!ready) { st.textContent = 'conectando…'; st.className = 'tstate'; }
-  else if (open) { st.textContent = playing ? '● falando' : '● mic aberto · DAW parada'; st.className = 'tstate open'; }
-  else { st.textContent = 'DAW tocando · segure T'; st.className = 'tstate wait'; }
-  tb.classList.toggle('on', open && ptt);
+  else if (open) { st.textContent = '● mic aberto'; st.className = 'tstate open'; }
+  else { st.textContent = pttKey ? 'mudo (segurando T)' : 'mudo'; st.className = 'tstate wait'; }
+  tb.classList.toggle('on', mute);
+  const tbHtml = muted ? 'Mudo ligado · clique para falar' : 'Mudo · segure <kbd>T</kbd>';
+  if (tb.innerHTML !== tbHtml) tb.innerHTML = tbHtml;
   $('micBar').style.width = (open ? Math.min(100, Math.max(0, (60 + 20 * Math.log10(micPeak || 1e-9)) / 60 * 100)) : 0) + '%';
   const talking = peerPeak > 0.003;
   chip('cPeer', talking ? 'estúdio: falando' : 'estúdio: quieto', talking ? 'ok' : '');
