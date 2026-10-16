@@ -645,11 +645,18 @@ sono_add_custom_plugin_target(SonoBus SonoRocket "${FormatsToBuild}" FALSE  "SRk
 # relay (Go) and cloudflared next to the executable.
 set (SONOROCKET_VERSION "dev" CACHE STRING "Version shown in the SonoRocket app")
 
+# the release version (e.g. 0.2.12) also goes into the .exe / .app properties
+if (SONOROCKET_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    set (SONOROCKET_FILE_VERSION "${SONOROCKET_VERSION}")
+else()
+    set (SONOROCKET_FILE_VERSION "${PROJECT_VERSION}")
+endif()
+
 juce_add_gui_app(SonoRocketCapture
     PRODUCT_NAME "SonoRocket"
     COMPANY_NAME "dB studios"
     BUNDLE_ID "com.dbstudios.SonoRocket.capture"
-    VERSION "${PROJECT_VERSION}"
+    VERSION "${SONOROCKET_FILE_VERSION}"
     ICON_BIG "sonorocket/macos/AppIcon.png"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "SonoRocket needs the audio input to stream it."
