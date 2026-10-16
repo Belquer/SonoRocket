@@ -63,6 +63,41 @@
   .mini i { display: block; height: 100%; width: 0; background: var(--ok); }
   kbd { font: 12px var(--mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; }
   .vol button.ghost { flex: 0 0 auto; width: auto; padding: 6px 12px; font-size: 13px; }
+
+  /* ---- compact layout: everything fits one screen ---- */
+  body { padding: max(10px, env(safe-area-inset-top)) 12px max(10px, env(safe-area-inset-bottom)); font-size: 14px; }
+  main { max-width: 980px; gap: 10px; }
+  header { align-items: center; }
+  h1 { font-size: 22px; flex: 0 0 auto; }
+  .room { flex: 1 1 auto; min-width: 0; }
+  header #playBtn { width: auto; flex: 0 0 auto; padding: 10px 22px; font-size: 16px; }
+  .join { flex: 1 1 auto; min-width: 0; }
+  .join input[type=text] { padding: 8px 10px; font-size: 15px; }
+  .cols { display: grid; gap: 10px; }
+  .col { display: grid; gap: 10px; align-content: start; }
+  @media (min-width: 820px) { .cols { grid-template-columns: 1fr 1fr; } }
+  .panel { padding: 10px 12px; border-radius: 12px; display: grid; gap: 8px; }
+  .line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .line input[type=range] { flex: 1 1 auto; min-width: 60px; margin: 0; }
+  .lab { color: var(--dim); font-size: 12px; flex: 0 0 auto; min-width: 54px; }
+  .val { font: 600 13px var(--mono); flex: 0 0 auto; min-width: 56px; text-align: right; }
+  .val.strong { font-size: 16px; text-align: left; min-width: 0; }
+  .grow { flex: 1 1 auto; min-width: 0; }
+  button.tiny { padding: 6px 10px; font-size: 13px; width: auto; flex: 0 0 auto; }
+  .line button.grow { flex: 1 1 0; }
+  .meters { gap: 5px; }
+  .meter { grid-template-columns: 14px 1fr 48px; }
+  .bar { height: 8px; }
+  .buf .bar { margin: 0; }
+  .stats { display: flex; gap: 14px; color: var(--dim); font-size: 12px; }
+  .stats strong { color: var(--text); font: 600 13px var(--mono); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font-size: 11px; padding: 3px 8px; }
+  .tstate { font-size: 14px; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #cPeer { flex: 0 0 auto; }
+  #talkBtn { flex: 1 1 auto; width: auto; padding: 10px; font-size: 15px; }
+  .talk .mini { height: 4px; }
+  footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; }
 </style>
 </head>
 <body>
@@ -70,72 +105,79 @@
   <header>
     <h1>Sono<span>Rocket</span></h1>
     <div class="room" id="roomLabel"></div>
+    <section id="joinPanel" class="join">
+      <input type="text" id="roomInput" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="sala" aria-label="Sala">
+    </section>
+    <button id="playBtn">Ouvir</button>
   </header>
 
-  <section class="panel" id="joinPanel">
-    <label for="roomInput">Sala</label>
-    <input type="text" id="roomInput" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="nome-da-sala">
-  </section>
+  <div class="cols">
+    <div class="col">
+      <section class="panel">
+        <div class="meters">
+          <div class="meter"><span>L</span><div class="bar"><i id="mL"></i></div><span id="dL">−∞</span></div>
+          <div class="meter"><span>R</span><div class="bar"><i id="mR"></i></div><span id="dR">−∞</span></div>
+        </div>
+        <div class="line">
+          <span class="lab">volume</span>
+          <input type="range" id="vol" min="-40" max="12" step="0.5" value="0" aria-label="Volume">
+          <span class="val" id="volLabel">0.0 dB</span>
+          <button class="ghost tiny" id="volReset" title="Volta a 0 dB, saída bit a bit">0 dB</button>
+        </div>
+      </section>
 
-  <button id="playBtn">Ouvir</button>
-
-  <section class="panel talk hidden" id="talkPanel">
-    <div class="row">
-      <div><div class="sub">talkback · sem os 2 s de atraso</div><div class="tstate" id="talkState">microfone desligado</div></div>
-      <span class="chip" id="cPeer" style="flex:0 0 auto">estúdio: quieto</span>
+      <section class="panel talk hidden" id="talkPanel">
+        <div class="line">
+          <span class="tstate" id="talkState">microfone desligado</span>
+          <span class="chip" id="cPeer">estúdio: quieto</span>
+        </div>
+        <div class="line">
+          <button class="ghost tiny" id="talkEnable">Ativar microfone</button>
+          <button id="talkBtn" class="hidden">Segure para falar · <kbd>T</kbd></button>
+        </div>
+        <div class="mini"><i id="micBar"></i></div>
+        <div class="line">
+          <span class="lab">voz estúdio</span>
+          <input type="range" id="talkVol" min="-40" max="12" step="0.5" value="0" aria-label="Volume da voz do estúdio">
+          <span class="val" id="talkVolLabel">0.0 dB</span>
+        </div>
+      </section>
     </div>
-    <div class="mini"><i id="micBar"></i></div>
-    <button class="ghost" id="talkEnable">Ativar microfone</button>
-    <button id="talkBtn" class="hidden">Segure para falar (<kbd>T</kbd>)</button>
-    <div>
-      <label for="talkVol">volume da voz do estúdio: <span id="talkVolLabel">0.0 dB</span></label>
-      <input type="range" id="talkVol" min="-40" max="12" step="0.5" value="0">
+
+    <div class="col">
+      <section class="panel buf">
+        <div class="line">
+          <span class="lab">buffer</span>
+          <span class="val strong" id="bufNow">0.0 s</span>
+          <span class="sub grow" id="bufState">parado</span>
+          <span class="sub">alvo</span><span class="val" id="bufTargetLabel">2.0 s</span>
+        </div>
+        <div class="bar"><i id="bufBar"></i><b id="bufMark"></b></div>
+        <input type="range" id="bufTarget" min="0.5" max="10" step="0.5" value="2" aria-label="Buffer alvo">
+        <div class="stats">
+          <span><strong id="sBlocks">0</strong> blocos ok</span>
+          <span><strong id="sGaps">0</strong> lacunas</span>
+          <span><strong id="sUnder">0</strong> rebuffers</span>
+        </div>
+      </section>
+
+      <section class="panel chips" id="chips">
+        <span class="chip" id="cSender">emissor: —</span>
+        <span class="chip" id="cFormat">formato: —</span>
+        <span class="chip" id="cRate">saída: —</span>
+        <span class="chip" id="cBits">integridade: —</span>
+        <span class="chip ok" id="cVol">volume: 0 dB (sem ganho)</span>
+      </section>
+
+      <div class="line">
+        <button class="ghost tiny grow" id="resyncBtn">Ressincronizar</button>
+        <button class="ghost tiny grow" id="copyBtn">Copiar link</button>
+      </div>
     </div>
-    <div class="sub">DAW parada: o microfone fica aberto. DAW tocando: segure <kbd>T</kbd> ou o botão para falar.</div>
-  </section>
-
-  <section class="panel chips" id="chips">
-    <span class="chip" id="cSender">emissor: —</span>
-    <span class="chip" id="cFormat">formato: —</span>
-    <span class="chip" id="cRate">saída: —</span>
-    <span class="chip" id="cBits">integridade: —</span>
-    <span class="chip ok" id="cVol">volume: 0 dB (sem ganho)</span>
-  </section>
-
-  <section class="panel vol">
-    <div class="row">
-      <div><div class="sub">volume (só no seu aparelho)</div><div class="big" id="volLabel">0.0 dB</div></div>
-      <button class="ghost" id="volReset" title="Volta a 0 dB, saída bit a bit">0 dB</button>
-    </div>
-    <input type="range" id="vol" min="-40" max="12" step="0.5" value="0" style="margin-top:10px" aria-label="Volume">
-  </section>
-
-  <section class="panel meters">
-    <div class="meter"><span>L</span><div class="bar"><i id="mL"></i></div><span id="dL">−∞</span></div>
-    <div class="meter"><span>R</span><div class="bar"><i id="mR"></i></div><span id="dR">−∞</span></div>
-  </section>
-
-  <section class="panel buf">
-    <div class="row" style="align-items:baseline">
-      <div><div class="big" id="bufNow">0.0 s</div><div class="sub" id="bufState">parado</div></div>
-      <div style="text-align:right"><div class="sub">buffer alvo</div><div class="big" id="bufTargetLabel">2.0 s</div></div>
-    </div>
-    <div class="bar" style="margin:12px 0"><i id="bufBar"></i><b id="bufMark"></b></div>
-    <input type="range" id="bufTarget" min="0.5" max="10" step="0.5" value="2">
-    <div class="stat" style="margin-top:12px">
-      <div><strong id="sBlocks">0</strong><span>blocos ok</span></div>
-      <div><strong id="sGaps">0</strong><span>lacunas</span></div>
-      <div><strong id="sUnder">0</strong><span>rebuffers</span></div>
-    </div>
-  </section>
-
-  <div class="row">
-    <button class="ghost" id="resyncBtn">Ressincronizar</button>
-    <button class="ghost" id="copyBtn">Copiar link</button>
   </div>
 
   <footer>
-    <span>PCM float32 sem compressão · cada bloco verificado por CRC32 · medidores mostram o sinal recebido (antes do volume)</span>
+    <span title="PCM float32 sem compressão · cada bloco verificado por CRC32 · medidores mostram o sinal recebido (antes do volume)">float32 sem compressão · CRC32 por bloco</span>
     <span class="sig">SonoRocket by Belquer <b>dB</b> &gt;¡&lt; 2026</span>
   </footer>
 </main>
