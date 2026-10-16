@@ -607,7 +607,9 @@ private:
         const bool masterAlive = now - chanLastMs[m] < 3000 || (m + 1 < kMaxCh && now - chanLastMs[m + 1] < 3000);
         if (masterAlive || bestPair < 0 || bestPair == m) { silentSinceMs = now; return {}; }
         if (now - silentSinceMs < 2000) return {};
-        if (! props->getBoolValue ("masterManual", false)) { setMaster (bestPair, false); return {}; }
+        // Only a hint, never an automatic switch: with the DAW stopped the master is silent by
+        // nature, and the talkback mic (or room noise) on another pair must not take its place.
+        if (now - silentSinceMs < 10000) return {};
         return u8 ("AO VIVO · sem sinal em ") + String (m + 1) + "-" + String (m + 2) + u8 (" · o som chega em ")
              + String (bestPair + 1) + "-" + String (bestPair + 2) + u8 (": troque em Master");
     }
