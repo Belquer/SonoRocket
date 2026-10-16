@@ -108,12 +108,27 @@ Confira se este Mac está na internet." '{"Desligar", "Tentar de novo"}' "Tentar
   [ "$B" = "Tentar de novo" ] || exit 0
 done
 
+# ---------------------------------------------------------------- 3b. registration (studio side only)
+unregistered() { [ "$(field licensing)" = "true" ] && [ "$(field licensed)" != "true" ]; }
+if unregistered; then
+  B=$(dialog "Este SonoRocket não está registrado.
+
+Gostou? Compre a sua licença para continuar usando e apoiar o desenvolvimento.
+Quem ouve pelo link nunca precisa de nada." '{"Agora não", "Já comprei", "Comprar"}' "Comprar")
+  case "$B" in
+    "Comprar") open "$(field buyUrl)" ;;
+    "Já comprei") open "$HTTP/conta" ;;
+  esac
+fi
+
 # ---------------------------------------------------------------- 4. the window
 while :; do
   refresh
   LINK="$(field link)"
   if [ "$(field senderOnline)" = "true" ]; then S1="🟢 Pro Tools transmitindo"; else S1="⚪️ Esperando o Pro Tools (SonoRocket no Master)"; fi
   S2="👂 Ouvindo agora: $(field listeners)"
+  if unregistered; then S2="$S2
+⚠️ Não registrado · registre em $HTTP/conta"; fi
 
   B=$(dialog "$S1
 $S2

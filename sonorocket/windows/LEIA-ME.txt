@@ -37,6 +37,18 @@ TALKBACK (falar com o dB sem os 2 segundos de atraso)
    O som das caixas que vaza no microfone é cancelado automaticamente.
    Pode desligar o áudio do Google Meet.
 
+PRO TOOLS (OU OUTRA DAW) NESTE MESMO PC, SEM CABO
+1. No SonoRocket, clique em "Instalar plugin" (ao lado de Master).
+2. Na DAW, no último insert do Master: SonoRocket.
+   No Pro Tools: Blue Cat PatchWork → SonoRocket (como no Mac).
+3. No SonoRocket, em Master, escolha "Plugin SonoRocket na DAW (neste PC)".
+   O plugin manda o master bit a bit; o SonoRocket cuida do link, do talkback e do vídeo.
+
+REGISTRO
+Se aparecer "SonoRocket não registrado": "Comprar" leva à loja, e "Registrar"
+abre a página para colar a chave que chega no e-mail da compra.
+Quem ouve pelo link nunca precisa de registro.
+
 VÍDEO (substitui o Google Meet)
 1. Ligue a webcam neste PC.
 2. Clique em "Vídeo" no SonoRocket: abre uma página no navegador (Chrome ou Edge).

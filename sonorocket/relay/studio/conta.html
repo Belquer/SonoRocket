@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SonoRocket · Registro</title>
+<style>
+  :root { --bg:#0b0b0c; --panel:#151517; --line:#26262a; --text:#f2f0eb; --dim:#8d8a84; --hot:#ff5a1f; --ok:#3ddc84; --bad:#ff4d4d;
+          --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  * { box-sizing: border-box; } [hidden] { display: none !important; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; padding:24px 16px; }
+  main { max-width:460px; margin:0 auto; display:grid; gap:14px; }
+  h1 { margin:0; font-size:26px; font-weight:800; letter-spacing:-0.02em; } h1 span { color:var(--hot); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; display:grid; gap:10px; }
+  .state { font:700 16px var(--mono); } .ok { color:var(--ok); } .bad { color:var(--bad); }
+  .dim { color:var(--dim); font-size:13px; }
+  label { color:var(--dim); font-size:13px; display:grid; gap:4px; }
+  input { font:15px var(--mono); padding:11px; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:10px; width:100%; }
+  button, a.btn { font:inherit; font-weight:700; border:0; border-radius:12px; padding:13px; cursor:pointer; text-align:center; text-decoration:none; display:block; }
+  .primary { background:var(--hot); color:var(--bg); } .ghost { background:transparent; color:var(--text); border:1px solid var(--line); }
+  .err { color:var(--bad); font-size:13px; min-height:1em; }
+  footer { color:var(--dim); font-size:12px; text-align:center; font-family:var(--mono); } footer b { color:var(--hot); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sono<span>Rocket</span></h1>
+  <section class="panel">
+    <div class="state" id="state">…</div>
+    <div class="dim" id="who"></div>
+  </section>
+  <section class="panel" id="buy">
+    <div>O registro é só do lado do estúdio. Quem ouve (o link) nunca precisa de nada.</div>
+    <a class="btn primary" id="buyBtn" href="#" target="_blank" rel="noopener">Comprar o SonoRocket</a>
+  </section>
+  <form class="panel" id="form">
+    <div><b>Já comprei</b> <span class="dim">· a chave chega no e-mail da compra</span></div>
+    <label>E-mail da compra <input type="email" id="email" autocomplete="email" required></label>
+    <label>Chave <input type="text" id="key" autocomplete="off" spellcheck="false" required placeholder="XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"></label>
+    <div class="err" id="err"></div>
+    <button class="primary" id="go">Registrar este computador</button>
+  </form>
+  <section class="panel" id="registered" hidden>
+    <button class="ghost" id="off">Desregistrar este computador</button>
+    <div class="dim">Use para mudar de computador: a chave fica livre para outro.</div>
+  </section>
+  <footer>SonoRocket by Belquer <b>dB</b> &gt;¡&lt; 2026</footer>
+</main>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+function show(s) {
+  $('buyBtn').href = s.buyUrl || '#';
+  if (!s.licensing) {
+    $('state').textContent = 'Registro não é necessário nesta versão'; $('state').className = 'state ok';
+    $('form').hidden = true; $('registered').hidden = true; $('buy').hidden = true; return;
+  }
+  if (s.licensed) {
+    $('state').textContent = '● Registrado'; $('state').className = 'state ok';
+    $('who').textContent = [s.name, s.email].filter(Boolean).join(' · ');
+    $('form').hidden = true; $('buy').hidden = true; $('registered').hidden = false;
+  } else {
+    $('state').textContent = 'Não registrado'; $('state').className = 'state bad';
+    $('who').textContent = s.status === 'invalid' ? 'A licença deste computador não é mais válida.' : '';
+    $('form').hidden = false; $('buy').hidden = false; $('registered').hidden = true;
+  }
+  $('err').textContent = s.error || '';
+}
+async function load() { show(await (await fetch('/license')).json()); }
+$('form').onsubmit = async (e) => {
+  e.preventDefault(); $('go').disabled = true; $('go').textContent = 'Verificando…';
+  const body = new URLSearchParams({ email: $('email').value, key: $('key').value });
+  try { show(await (await fetch('/license/activate', { method: 'POST', body })).json()); }
+  catch { $('err').textContent = 'Não consegui falar com o SonoRocket. Ele está aberto?'; }
+  $('go').disabled = false; $('go').textContent = 'Registrar este computador';
+};
+$('off').onclick = async () => { show(await (await fetch('/license/deactivate', { method: 'POST' })).json()); };
+load();
+</script>
+</body>
+</html>

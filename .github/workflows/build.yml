@@ -51,8 +51,8 @@ jobs:
       - name: Build relay (universal)
         working-directory: sonorocket/relay
         run: |
-          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /tmp/relay-arm64 .
-          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /tmp/relay-amd64 .
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.lsProductID=${{ vars.LS_PRODUCT_ID }} -X main.lsStoreID=${{ vars.LS_STORE_ID }} -X 'main.buyURL=${{ vars.BUY_URL || 'https://github.com/Belquer/SonoRocket#comprar' }}'" -o /tmp/relay-arm64 .
+          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.lsProductID=${{ vars.LS_PRODUCT_ID }} -X main.lsStoreID=${{ vars.LS_STORE_ID }} -X 'main.buyURL=${{ vars.BUY_URL || 'https://github.com/Belquer/SonoRocket#comprar' }}'" -o /tmp/relay-amd64 .
           lipo -create /tmp/relay-arm64 /tmp/relay-amd64 -output /tmp/rocket-relay
 
       - name: Fetch cloudflared (universal)
@@ -112,12 +112,12 @@ jobs:
         shell: bash
         run: echo "version=0.2.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
 
-      # The plugin (SonoBus_VST3) needs the ASIO SDK on Windows; the capture app doesn't.
-      - name: Build capture app
+      # Without ASIO (no SDK needed): the capture app never used it, and the VST3 doesn't need it.
+      - name: Build capture app + VST3 plugin
         shell: bash
         run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DSONOROCKET_VERSION="${{ steps.v.outputs.version }}"
-          cmake --build build --config Release --target SonoRocketCapture -- -m
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DSONOROCKET_ASIO=OFF -DSONOROCKET_VERSION="${{ steps.v.outputs.version }}"
+          cmake --build build --config Release --target SonoRocketCapture SonoBus_VST3 -- -m
 
       # Go 1.20 is the last release that still runs on Windows 7/8.1
       - uses: actions/setup-go@v5
@@ -128,7 +128,7 @@ jobs:
       - name: Build relay
         shell: bash
         working-directory: sonorocket/relay
-        run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$RUNNER_TEMP/rocket-relay.exe" .
+        run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.lsProductID=${{ vars.LS_PRODUCT_ID }} -X main.lsStoreID=${{ vars.LS_STORE_ID }} -X 'main.buyURL=${{ vars.BUY_URL || 'https://github.com/Belquer/SonoRocket#comprar' }}'" -o "$RUNNER_TEMP/rocket-relay.exe" .
 
       - name: Package
         shell: bash
@@ -137,6 +137,7 @@ jobs:
           OUT="$RUNNER_TEMP/SonoRocket"
           mkdir -p "$OUT" dist
           cp build/SonoRocketCapture_artefacts/Release/SonoRocket.exe "$OUT/"
+          mkdir -p "$OUT/Plugin" && cp -R build/SonoBus_artefacts/Release/VST3/SonoRocket.vst3 "$OUT/Plugin/"
           cp "$RUNNER_TEMP/rocket-relay.exe" "$OUT/"
           curl -fsSL -o "$OUT/cloudflared.exe" https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
           cp sonorocket/windows/LEIA-ME.txt "$OUT/"

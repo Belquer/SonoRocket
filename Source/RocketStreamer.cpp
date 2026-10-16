@@ -187,6 +187,13 @@ void RocketStreamer::setTalkbackEnabled (bool on)
     notify();
 }
 
+void RocketStreamer::setTalkOnly (bool on)
+{
+    if (talkOnly.exchange (on) == on) return;
+    ++configGeneration;   // different handshake: reconnect
+    notify();
+}
+
 void RocketStreamer::pushVoice (const int16_t* pcm, int n)
 {
     if (n <= 0 || n > 960 || state.load() != State::Streaming || ! talkEnabled.load()) return;
@@ -234,6 +241,22 @@ void RocketStreamer::handleRelayLine (const juce::String& line)
 
 void RocketStreamer::handleRelayBinary (const uint8_t* p, size_t n)
 {
+    // talk-only: the relay's copy of the master (format JSON, or an RKT1 audio block)
+    if (n > 1 && p[0] == 2 && talkOnly.load()) {
+        const auto js = juce::JSON::parse (juce::String::fromUTF8 ((const char*) p + 1, (int) n - 1));
+        masterCopyChannels = juce::jlimit (1, 2, (int) js.getProperty ("ch", 2));
+        if (onMasterFormat) onMasterFormat ((double) js.getProperty ("sr", 48000), masterCopyChannels);
+        return;
+    }
+    if (n >= 13 && p[0] == 1 && talkOnly.load()) {
+        const int frames = (int) (p[5] | (p[6] << 8) | (p[7] << 16) | ((uint32_t) p[8] << 24));
+        if (frames > 0 && n == (size_t) (13 + frames * masterCopyChannels * 4) && onMasterBlock) {
+            std::vector<float> pcm ((size_t) frames * (size_t) masterCopyChannels);
+            std::memcpy (pcm.data(), p + 13, pcm.size() * sizeof (float));
+            onMasterBlock (pcm.data(), frames, masterCopyChannels);
+        }
+        return;
+    }
     // type 5: talkback from a listener: [5][id u16][seq u32][n u16][int16 pcm]
     if (n < 9 || p[0] != 5 || ! talkEnabled.load()) return;
     const uint16_t id = (uint16_t) (p[1] | (p[2] << 8));
@@ -251,7 +274,7 @@ void RocketStreamer::pollRelayMessages()
     // From the relay: text lines ("LINK <url>\n"), and with talkback, binary
     // frames marked by a leading 0x00 byte: 0x00, u32 len, payload.
     while (socket && socket->waitUntilReady (true, 0) == 1) {
-        uint8_t buf[4096];
+        uint8_t buf[65536];   // big enough for the talk-only master copy
         const int n = socket->read (buf, (int) sizeof (buf), false);
         if (n <= 0) { disconnect ("connection lost", State::Error); return; }
         rx.insert (rx.end(), buf, buf + n);
@@ -262,7 +285,7 @@ void RocketStreamer::pollRelayMessages()
                 if (rx.size() - pos < 5) break;
                 const uint32_t len = (uint32_t) rx[pos + 1] | ((uint32_t) rx[pos + 2] << 8)
                                    | ((uint32_t) rx[pos + 3] << 16) | ((uint32_t) rx[pos + 4] << 24);
-                if (len > 65536) { rx.clear(); pos = 0; break; }   // garbage: resync
+                if (len > (1u << 20)) { rx.clear(); pos = 0; break; }   // garbage: resync
                 if (rx.size() - pos < 5 + (size_t) len) break;
                 handleRelayBinary (rx.data() + pos + 5, len);
                 pos += 5 + len;
@@ -348,6 +371,7 @@ bool RocketStreamer::connectAndHandshake()
     obj->setProperty ("fmt", "f32");
     obj->setProperty ("app", "SonoRocket");
     if (talkEnabled.load()) obj->setProperty ("talk", 1);
+    if (talkOnly.load()) obj->setProperty ("role", "talk");
     const juce::String hs = juce::JSON::toString (juce::var (obj), true) + "\n";
     sentFormatGeneration = formatGeneration.load();
 
@@ -443,6 +467,7 @@ void RocketStreamer::run()
         block.resize ((size_t) blockSamples);
 
         bool ok = sendPendingVoice();
+        if (talkOnly.load()) fifo->finishedRead (fifo->getNumReady());   // the master is someone else's job
         while (ok && fifo->getNumReady() >= blockSamples && ! threadShouldExit()) {
             if (! sendPendingVoice()) { ok = false; break; }   // talkback never waits behind the master
             int s1, n1, s2, n2;

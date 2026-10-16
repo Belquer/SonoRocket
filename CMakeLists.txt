@@ -38,6 +38,10 @@ endif()
 
 project(SonoRocket VERSION 0.1.0)
 
+# ASIO needs Steinberg's SDK next to the repo (../asiosdk). Only the standalone uses it;
+# the Windows VST3 (and the capture app) build without it: -DSONOROCKET_ASIO=OFF
+option(SONOROCKET_ASIO "Build with ASIO support (needs ../asiosdk)" ON)
+
 set(BUILDVERSION 80)
 
 
@@ -454,7 +458,7 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
         JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1
 	JUCE_USE_WINDOWS_MEDIA_FORMAT=1
         JUCE_LOAD_CURL_SYMBOLS_LAZILY=1
-        JUCE_ASIO=1
+        JUCE_ASIO=$<BOOL:${SONOROCKET_ASIO}>
         JUCE_WASAPI=1
         JUCE_DIRECTSOUND=0
         JUCE_JACK=1

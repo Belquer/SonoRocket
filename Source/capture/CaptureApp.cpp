@@ -43,7 +43,8 @@ static void trace (const String& msg)
 class RelayManager : private Thread
 {
 public:
-    struct Status { bool reachable = false; String link, tunnel; bool senderOnline = false; int listeners = 0; String error; };
+    struct Status { bool reachable = false; String link, tunnel; bool senderOnline = false; int listeners = 0; String error;
+                    bool licensing = false, licensed = true; String buyUrl; };
 
     RelayManager() : Thread ("relay manager") {}
     ~RelayManager() override { stop(); }
@@ -132,6 +133,9 @@ private:
                 status.tunnel = js.getProperty ("tunnel", {}).toString();
                 status.senderOnline = (bool) js.getProperty ("senderOnline", false);
                 status.listeners = (int) js.getProperty ("listeners", 0);
+                status.licensing = (bool) js.getProperty ("licensing", false);
+                status.licensed = (bool) js.getProperty ("licensed", true);
+                status.buyUrl = js.getProperty ("buyUrl", {}).toString();
             }
             wait (1000);
         }
@@ -315,7 +319,23 @@ public:
         addAndMakeVisible (tip);
 
         // --- talkback
-        masterStart = props->getIntValue ("masterStart", 0);
+        masterStart = jmax (0, props->getIntValue ("masterStart", 0));
+        pluginMode = props->getIntValue ("masterStart", 0) < 0;
+        // talk-only: the relay sends us the plugin's master, for the echo reference and the meters
+        streamer.onMasterFormat = [this] (double sr, int) { talkback.prepareReference (sr); };
+        streamer.onMasterBlock = [this] (const float* x, int frames, int ch) {
+            copyL.resize ((size_t) frames); copyR.resize ((size_t) frames);
+            float pk[2] = { 0, 0 };
+            for (int i = 0; i < frames; ++i) {
+                copyL[(size_t) i] = x[i * ch]; copyR[(size_t) i] = x[i * ch + ch - 1];
+                pk[0] = jmax (pk[0], std::abs (copyL[(size_t) i])); pk[1] = jmax (pk[1], std::abs (copyR[(size_t) i]));
+            }
+            talkback.captureReference (copyL.data(), copyR.data(), frames);
+            for (int c = 0; c < 2; ++c) { float prev = peak[c].load(); while (pk[c] > prev && ! peak[c].compare_exchange_weak (prev, pk[c])) {} }
+            if (jmax (pk[0], pk[1]) > kPlayingThreshold) dawLoud = true;
+        };
+        streamer.setTalkOnly (pluginMode.load());
+        talkback.setReferenceLatencyMs (pluginMode.load() ? 100 : 0);
         micChannel  = props->getIntValue ("talkMic", -1);
         micDevName  = props->getValue ("talkMicDevice");
         micDevCh    = props->getIntValue ("talkMicCh", 0);
@@ -335,7 +355,22 @@ public:
         outLab.setText (u8 ("Voz do dB sai em"), dontSendNotification);   // its own output device
         volLab.setText ("Volume da voz", dontSendNotification);
         for (auto* b : { &masterBox, &micBox, &outBox }) addAndMakeVisible (*b);
-        masterBox.onChange = [this] { setMaster (jmax (0, (masterBox.getSelectedId() - 1) * 2), true); };
+        masterBox.onChange = [this] {
+            if (masterBox.getSelectedId() == kPluginId) setPluginMode (true);
+            else { setPluginMode (false); setMaster (jmax (0, (masterBox.getSelectedId() - 1) * 2), true); }
+        };
+        styleButton (pluginBtn, kLine, kText);
+        pluginBtn.onClick = [this] { installPlugin(); };
+        addAndMakeVisible (pluginBtn);
+        // license: buy / register (studio side only; listeners never need anything)
+        licLabel.setFont (Font (14.0f, Font::bold));
+        licLabel.setColour (Label::textColourId, Colours::black);
+        licLabel.setText (u8 ("SonoRocket não registrado"), dontSendNotification);
+        styleButton (buyBtn, Colours::black, kOrange);
+        styleButton (regBtn, Colours::black, kText);
+        buyBtn.onClick = [this] { const auto u = relay.getStatus().buyUrl; if (u.isNotEmpty()) URL (u).launchInDefaultBrowser(); };
+        regBtn.onClick = [] { URL ("http://127.0.0.1:8080/conta").launchInDefaultBrowser(); };
+        for (auto* c : std::initializer_list<Component*> { &licLabel, &buyBtn, &regBtn }) addChildComponent (c);
         micBox.onChange = [this] { chooseMic (micBox.getSelectedId()); };
         outBox.onChange = [this] {
             talkOutName = outBox.getSelectedId() >= 2 ? outBox.getText() : String();
@@ -398,9 +433,10 @@ public:
         g.fillRoundedRectangle (inputPanel.toFloat(), 12.0f);
         g.fillRoundedRectangle (sharePanel.toFloat(), 12.0f);
         g.fillRoundedRectangle (talkPanel.toFloat(), 12.0f);
+        if (! licPanel.isEmpty()) { g.setColour (kOrange); g.fillRoundedRectangle (licPanel.toFloat(), 10.0f); }
     }
 
-    static constexpr int kContentHeight = 930;
+    static constexpr int kContentHeight = 980;
     static constexpr int kMaxCh = 64;
 
     void resized() override
@@ -412,6 +448,14 @@ public:
         status.setBounds (b.removeFromTop (26));
         detail.setBounds (b.removeFromTop (20));
         b.removeFromTop (10);
+        if (licBanner) {
+            licPanel = b.removeFromTop (40);
+            auto l = licPanel.reduced (10, 6);
+            regBtn.setBounds (l.removeFromRight (100)); l.removeFromRight (6);
+            buyBtn.setBounds (l.removeFromRight (100)); l.removeFromRight (6);
+            licLabel.setBounds (l);
+            b.removeFromTop (10);
+        } else licPanel = {};
 
         sharePanel = b.removeFromTop (170);
         {
@@ -435,7 +479,7 @@ public:
             auto t = talkPanel.reduced (12);
             talkTitle.setBounds (t.removeFromTop (22));
             auto row = [&] (Label& l, Component& c) { auto r = t.removeFromTop (26); l.setBounds (r.removeFromLeft (130)); c.setBounds (r); t.removeFromTop (4); };
-            row (masterLab, masterBox);
+            { auto r = t.removeFromTop (26); masterLab.setBounds (r.removeFromLeft (130)); pluginBtn.setBounds (r.removeFromRight (120)); r.removeFromRight (6); masterBox.setBounds (r); t.removeFromTop (4); }
             row (micLab, micBox);
             { auto r = t.removeFromTop (8); micMeter.setBounds (r.withTrimmedLeft (130).reduced (0, 1)); t.removeFromTop (4); }
             { auto r = t.removeFromTop (26); outLab.setBounds (r.removeFromLeft (130)); testBtn.setBounds (r.removeFromRight (70)); r.removeFromRight (6); outBox.setBounds (r); t.removeFromTop (4); }
@@ -478,7 +522,7 @@ private:
         const int chans = masterStart.load() + 1 < devIns ? 2 : 1;
         trace ("audio: started " + d->getName() + " @ " + String (d->getCurrentSampleRate()) + " Hz, " + String (devIns.load()) + " in");
         streamer.prepare (d->getCurrentSampleRate(), chans);
-        talkback.prepareReference (d->getCurrentSampleRate());
+        if (! pluginMode.load()) talkback.prepareReference (d->getCurrentSampleRate());
         if (micChannel.load() >= 0) talkback.prepareMic (d->getCurrentSampleRate());
         sampleRate = d->getCurrentSampleRate();
     }
@@ -489,6 +533,13 @@ private:
     {
         for (int c = 0; c < numOut; ++c) if (out[c]) FloatVectorOperations::clear (out[c], n);
         if (numIn <= 0 || n <= 0) return;
+
+        // master from the DAW plugin (talk-only): only the talkback mic is ours here
+        if (pluginMode.load()) {
+            const int mic = micChannel.load();
+            if (mic >= 0 && mic < numIn) talkback.captureMic (in[mic], n);
+            return;
+        }
 
         // master: the chosen input pair, streamed untouched
         int m0 = masterStart.load();
@@ -553,7 +604,10 @@ private:
         masterBox.clear (dontSendNotification);
         for (int i = 0; i < jmax (1, ins.size()); i += 2)
             masterBox.addItem (i + 1 < ins.size() ? "Entradas " + String (i + 1) + "-" + String (i + 2) : "Entrada " + String (i + 1), i / 2 + 1);
-        masterBox.setSelectedId (jlimit (1, jmax (1, masterBox.getNumItems()), masterStart.load() / 2 + 1), dontSendNotification);
+        masterBox.addSeparator();
+        masterBox.addItem (u8 ("Plugin SonoRocket na DAW (neste PC)"), kPluginId);
+        if (pluginMode.load()) masterBox.setSelectedId (kPluginId, dontSendNotification);
+        else masterBox.setSelectedId (jlimit (1, jmax (1, masterBox.getNumItems() - 1), masterStart.load() / 2 + 1), dontSendNotification);
 
         // the mic: another input of this device, or any other input device
         // (Windows often shows each input pair of an interface as its own device)
@@ -579,6 +633,61 @@ private:
         const int outSel = outs.indexOf (talkOutName);
         outBox.setSelectedId (outSel >= 0 ? outSel + 2 : 1, dontSendNotification);
         updateTalkEnabled();
+    }
+
+    // The master from the SonoRocket plugin on the DAW's master bus (any DAW on this PC; Pro
+    // Tools through Blue Cat PatchWork). The plugin streams to our relay itself; we stay on as
+    // the talkback, with the relay's copy of the master as the echo reference.
+    void setPluginMode (bool on)
+    {
+        if (pluginMode.load() == on) return;
+        pluginMode = on;                    // the audio thread stops feeding the reference first
+        Thread::sleep (60);
+        if (on) props->setValue ("masterStart", -1);
+        else if (auto* d = deviceManager.getCurrentAudioDevice()) talkback.prepareReference (d->getCurrentSampleRate());
+        streamer.setTalkOnly (on);
+        talkback.setReferenceLatencyMs (on ? 100 : 0);   // the plugin's master reaches us after the speakers
+        updateTalkEnabled();
+        trace (on ? "master: from the DAW plugin" : "master: from the inputs");
+    }
+
+    void updateLicense (const RelayManager::Status& rs)
+    {
+        const bool show = rs.reachable && rs.licensing && ! rs.licensed;
+        if (show != licBanner) {
+            licBanner = show;
+            for (auto* c : std::initializer_list<Component*> { &licLabel, &buyBtn, &regBtn }) c->setVisible (show);
+            resized(); repaint();
+        }
+        // once per run, a minute in: the message to buy
+        if (show && ! nagged && ++unlicensedTicks > 600) {
+            nagged = true;
+            AlertWindow::showOkCancelBox (MessageBoxIconType::InfoIcon, "SonoRocket",
+                u8 ("Este SonoRocket não está registrado.\n\nGostou? Compre a sua licença para continuar usando, e apoie o desenvolvimento. Quem ouve pelo link nunca precisa de nada."),
+                "Comprar", "Agora não", nullptr,
+                ModalCallbackFunction::create ([u = rs.buyUrl] (int r) { if (r == 1 && u.isNotEmpty()) URL (u).launchInDefaultBrowser(); }));
+        }
+    }
+
+    void installPlugin()
+    {
+        const auto exeDir = File::getSpecialLocation (File::currentExecutableFile).getParentDirectory();
+        const auto src = exeDir.getChildFile ("Plugin").getChildFile ("SonoRocket.vst3");
+        if (! src.exists()) { AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "SonoRocket", u8 ("Não achei a pasta Plugin ao lado do SonoRocket.exe.")); return; }
+        StringArray done;
+        for (auto dir : { File::getSpecialLocation (File::globalApplicationsDirectory).getSiblingFile ("Common Files").getChildFile ("VST3"),
+                          File (SystemStats::getEnvironmentVariable ("LOCALAPPDATA", {})).getChildFile ("Programs").getChildFile ("Common").getChildFile ("VST3") }) {
+            if (dir.getFullPathName().isEmpty()) continue;
+            dir.createDirectory();
+            const auto dst = dir.getChildFile ("SonoRocket.vst3");
+            dst.deleteRecursively();
+            if (src.isDirectory() ? src.copyDirectoryTo (dst) : src.copyFileTo (dst)) done.add (dir.getFullPathName());
+        }
+        trace ("plugin install: " + done.joinIntoString (" | "));
+        AlertWindow::showMessageBoxAsync (done.isEmpty() ? MessageBoxIconType::WarningIcon : MessageBoxIconType::InfoIcon, "SonoRocket",
+            done.isEmpty() ? u8 ("Não consegui copiar o plugin. Copie a pasta Plugin\\SonoRocket.vst3 para C:\\Program Files\\Common Files\\VST3.")
+                           : u8 ("Plugin instalado em:\n") + done.joinIntoString ("\n")
+                             + u8 ("\n\nNa DAW: coloque o SonoRocket no último insert do master (no Pro Tools, dentro do Blue Cat PatchWork). Aqui, em Master, escolha \"Plugin SonoRocket na DAW\"."));
     }
 
     void setMaster (int start, bool manual)
@@ -622,7 +731,7 @@ private:
 
     void updateTalkEnabled()
     {
-        const bool on = micChannel.load() >= 0 || micDevName.isNotEmpty() || talkOutName.isNotEmpty();
+        const bool on = pluginMode.load() || micChannel.load() >= 0 || micDevName.isNotEmpty() || talkOutName.isNotEmpty();
         if (on != streamer.isTalkbackEnabled()) trace (String ("talkback: ") + (on ? "on" : "off"));
         streamer.setTalkbackEnabled (on);
     }
@@ -804,6 +913,7 @@ private:
 
         const auto rs = relay.getStatus();
         const auto st = streamer.getState();
+        updateLicense (rs);
         const bool enabled = streamer.getConfig().enabled;
         const bool publicLink = rs.link.startsWith ("https://") && (rs.tunnel == "up" || rs.tunnel == "fixed");
         currentLink = publicLink ? rs.link : String();
@@ -816,12 +926,16 @@ private:
         else if (! enabled)                         { s = "Desligado"; col = kDim; }
         else if (st != State::Streaming)            { s = "Conectando..."; }
         else if (! publicLink)                      { s = u8 ("AO VIVO · gerando link público…"); }
+        else if (pluginMode.load() && ! rs.senderOnline) { s = u8 ("Esperando o plugin SonoRocket no master da DAW"); }
+        else if (pluginMode.load())                 { s = u8 ("AO VIVO · master vindo do plugin na DAW"); col = kGreen; }
         else if (deviceManager.getCurrentAudioDevice() == nullptr) { s = u8 ("Escolha a entrada de áudio aqui embaixo"); }
-        else if (const auto hint = findSignal(); hint.isNotEmpty()) { s = hint; }
+        else if (const auto hint = pluginMode.load() ? String() : findSignal(); hint.isNotEmpty()) { s = hint; }
         else if (heldPeak[0] < 1e-6f && heldPeak[1] < 1e-6f) { s = u8 ("AO VIVO · sem sinal na entrada (dê play no Pro Tools)"); }
         else                                        { s = "AO VIVO"; col = kGreen; }
 
-        if (st == State::Streaming)
+        if (st == State::Streaming && pluginMode.load())
+            d << u8 ("plugin na DAW · ") << rs.listeners << " ouvindo";
+        else if (st == State::Streaming)
             d << String (sampleRate, 0) << " Hz · float32 · " << rs.listeners << (rs.listeners == 1 ? " ouvindo" : " ouvindo")
               << " · fila " << String (streamer.getFifoSeconds(), 2) << " s";
         if (streamer.getFramesDropped() > 0) d << " · PERDEU " << String (streamer.getFramesDropped());
@@ -847,6 +961,14 @@ private:
     RelayManager relay;
     std::vector<std::unique_ptr<MidiInput>> midiInputs;
     std::atomic<int> masterStart { 0 }, micChannel { -1 };
+    std::atomic<bool> pluginMode { false };
+    static constexpr int kPluginId = 900;
+    std::vector<float> copyL, copyR;
+    bool licBanner = false, nagged = false;
+    int unlicensedTicks = 0;
+    juce::Rectangle<int> licPanel;
+    Label licLabel;
+    TextButton buyBtn { "Comprar" }, regBtn { "Registrar" }, pluginBtn { "Instalar plugin" };
     std::atomic<int> devIns { 0 };
     std::atomic<float> chanPeak[64] {};
     juce::uint32 chanLastMs[64] {};

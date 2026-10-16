@@ -92,3 +92,24 @@ then the master (which has its 2 s buffer).
   and the relay asks the senders for one.
 * `?studio=1` is the studio's page (opened by the capture app's "Vídeo" button on
   `http://127.0.0.1:8080`): camera only, no master audio.
+
+## Talk-only sender (master from a plugin on the same computer)
+
+A second sender role in the same room: handshake `{"v":1,"room":..,"role":"talk","talk":1,...}`.
+It sends only voice (type 4) and keepalives, and receives, as `0x00, len u32, payload` frames,
+the listeners' voice (type 5, preferred over the master sender's) plus a copy of the master
+sender's format (type 2) and audio blocks (type 1), oldest dropped first, to use as its echo
+canceller's reference. The master sender (e.g. the DAW plugin) is unaffected; "newest wins"
+applies within each role. The capture app holds its mic back 100 ms in this mode, since that
+reference arrives after the speakers have played it.
+
+## Registration (studio side)
+
+Studios register with a Lemon Squeezy license key; listeners never do. Built into the relay
+(our own code, not the GPL plugin): `go build -ldflags "-X main.lsProductID=… -X main.lsStoreID=…
+-X main.buyURL=…"` (CI reads repository variables `LS_PRODUCT_ID`, `LS_STORE_ID`, `BUY_URL`).
+Without a product id, registration is off. Keys must belong to our store/product (and match the
+purchase e-mail); validated daily, 30 days offline grace. `/status` carries `licensing`,
+`licensed`, `buyUrl`; `/conta`, `/license`, `/license/activate`, `/license/deactivate` answer only
+requests from this computer that did not come through the tunnel (which also arrives from
+127.0.0.1, so proxy headers decide), and so does `/quit`.

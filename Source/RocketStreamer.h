@@ -12,6 +12,7 @@
 #include <juce_core/juce_core.h>
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <vector>
 
 namespace SonoRocket {
@@ -64,6 +65,14 @@ public:
     bool popIncomingVoice (std::vector<int16_t>& pcm, uint16_t& listenerId);
     static constexpr int kVoiceRate = 16000;
 
+    // Talk-only: connect as the relay's "talk" sender (voice both ways, no audio blocks),
+    // while the master comes from another sender, e.g. the plugin in a DAW on this computer.
+    // The relay then sends us a copy of that master (for the echo canceller's reference).
+    void setTalkOnly (bool on);
+    bool isTalkOnly() const noexcept { return talkOnly.load(); }
+    std::function<void (double sampleRate, int channels)> onMasterFormat;            // network thread
+    std::function<void (const float* interleaved, int frames, int channels)> onMasterBlock;   // network thread
+
     static constexpr int kBlockFrames  = 1024;
     static constexpr double kFifoSeconds = 20.0;
 
@@ -106,7 +115,8 @@ private:
     juce::String lastError, relayLink;
     std::vector<uint8_t> rx;   // bytes from the relay: text lines, or 0x00 + u32 len + payload
 
-    std::atomic<bool> talkEnabled { false };
+    std::atomic<bool> talkEnabled { false }, talkOnly { false };
+    int masterCopyChannels = 2;
     juce::CriticalSection voiceLock;
     std::deque<juce::MemoryBlock> voiceOut;                                    // framed, ready to send
     std::deque<std::pair<uint16_t, std::vector<int16_t>>> voiceIn;

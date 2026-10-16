@@ -17,16 +17,34 @@ int main (int argc, char** argv)
 {
     const juce::String room = argc > 1 ? argv[1] : "talk-test";
     const double sr = 48000.0; const int bs = 480;
-    RocketStreamer s;
+    // argv[3] == "plugin": the master comes from a separate sender (a DAW plugin), and the
+    // talkback runs talk-only, getting the master back from the relay as its echo reference
+    const bool pluginMode = argc > 3 && juce::String (argv[3]) == "plugin";
+    RocketStreamer s, plugin;
+    RocketStreamer::Config c; c.room = room; c.enabled = true;
+    { RocketStreamer::Config off; off.enabled = false; plugin.setConfig (off); }   // streams only in plugin mode
     s.prepare (sr, 2);
     s.setTalkbackEnabled (true);
-    RocketStreamer::Config c; c.room = room; c.enabled = true; s.setConfig (c);
+    s.setTalkOnly (pluginMode);
+    if (pluginMode) { plugin.prepare (sr, 2); plugin.setConfig (c); }
+    s.setConfig (c);
     for (int i = 0; i < 300 && s.getState() != RocketStreamer::State::Streaming; ++i) std::this_thread::sleep_for (std::chrono::milliseconds (10));
     if (s.getState() != RocketStreamer::State::Streaming) { printf ("not streaming\n"); return 2; }
 
     // argv[2]: mic offset in ms (simulates the mic on another device, e.g. 30)
     const int micDelay = (int) (sr * (argc > 2 ? atof (argv[2]) : 0.0) / 1000.0);
     Talkback tb (s);
+    std::vector<float> cl, cr;
+    if (pluginMode) {
+        s.onMasterFormat = [&] (double r, int) { tb.prepareReference (r); };
+        s.onMasterBlock = [&] (const float* x, int frames, int ch) {
+            cl.resize ((size_t) frames); cr.resize ((size_t) frames);
+            for (int i = 0; i < frames; ++i) { cl[(size_t) i] = x[i * ch]; cr[(size_t) i] = x[i * ch + ch - 1]; }
+            tb.captureReference (cl.data(), cr.data(), frames);
+        };
+        tb.setReferenceLatencyMs (100);
+        for (int i = 0; i < 300 && plugin.getState() != RocketStreamer::State::Streaming; ++i) std::this_thread::sleep_for (std::chrono::milliseconds (10));
+    }
     tb.prepareReference (sr);
     tb.prepareMic (sr);
     tb.prepareOutput (sr);
@@ -78,8 +96,8 @@ int main (int argc, char** argv)
         if (! m8 && t >= 8) { printf ("MARK voice %lld\n", nowMs()); m8 = true; }
         if (! m11 && t >= 11) { printf ("MARK listen %lld\n", nowMs()); fflush (stdout); m11 = true; }
         const float* m[2] = { L.data(), R.data() };
-        s.pushAudio (m, 2, bs);   // the master rides the same connection, as in the app
-        tb.captureReference (L.data(), R.data(), bs);
+        if (pluginMode) plugin.pushAudio (m, 2, bs);   // the DAW plugin streams the master
+        else { s.pushAudio (m, 2, bs); tb.captureReference (L.data(), R.data(), bs); }   // same connection, as in the app
         tb.captureMic (mic.data(), bs);
         tb.render (out.data(), bs);
         for (int i = 0; i < bs; ++i) { outLine[olp] = out[i]; olp = (olp + 1) % outLine.size(); }

@@ -38,6 +38,11 @@ import (
 //go:embed public
 var publicFS embed.FS
 
+// Studio-only pages (registration): served to this computer, never through the tunnel.
+//
+//go:embed studio
+var studioFS embed.FS
+
 var (
 	senderAddr  = flag.String("sender", envOr("SENDER_ADDR", "127.0.0.1:9100"), "TCP address for the DAW plugin (use :9100 to accept remote senders)")
 	httpAddr    = flag.String("http", envOr("HTTP_ADDR", ":8080"), "HTTP address for listeners")
@@ -165,12 +170,19 @@ type wsMsg struct {
 func (l *listener) close() { l.once.Do(func() { close(l.out) }) }
 
 type room struct {
-	mu            sync.Mutex
-	name          string
-	format        *format
-	sender        net.Conn
-	senderLink    chan string // pushes link updates to the connected sender
-	senderVoice   chan []byte // listener talkback → sender (nil if the sender has no talkback)
+	mu          sync.Mutex
+	name        string
+	format      *format
+	sender      net.Conn
+	senderLink  chan string // pushes link updates to the connected sender
+	senderVoice chan []byte // listener talkback → sender (nil if the sender has no talkback)
+
+	// A "talk" sender: talkback only, while the master comes from another sender (a DAW
+	// plugin on the same computer). It gets the listeners' voice, and a copy of the
+	// master for its echo canceller.
+	talker        net.Conn
+	talkerVoice   chan []byte
+	talkerMaster  chan []byte
 	nextID        uint16
 	listeners     map[*listener]bool
 	backlog       [][]byte
@@ -203,6 +215,21 @@ func (r *room) sendAll(m wsMsg) {
 			l.close()
 			delete(r.listeners, l)
 		}
+	}
+}
+
+// talkAvail: someone in the studio can hear the listeners and answer.
+func (r *room) talkAvail() bool { return r.senderVoice != nil || r.talkerVoice != nil }
+
+func (r *room) senderJSON() {
+	r.sendJSON(map[string]any{"type": "sender", "online": r.sender != nil, "talk": r.talkAvail()})
+}
+
+// copyToTalker hands the talker a master payload (format or audio), dropping the oldest
+// when it lags: it's only an echo reference.
+func (r *room) copyToTalker(p []byte) {
+	if r.talkerMaster != nil {
+		pushLatest(r.talkerMaster, p)
 	}
 }
 
@@ -352,6 +379,9 @@ type status struct {
 	SenderOnline bool   `json:"senderOnline"`
 	Listeners    int    `json:"listeners"`
 	Format       any    `json:"format"`
+	Licensing    bool   `json:"licensing"` // registration required in this build
+	Licensed     bool   `json:"licensed"`
+	BuyURL       string `json:"buyUrl"`
 }
 
 func getStatus() status {
@@ -365,6 +395,7 @@ func getStatus() status {
 	linkMu.Lock()
 	st.Tunnel = tunnelSt
 	linkMu.Unlock()
+	st.Licensing, st.Licensed, st.BuyURL = licensingOn(), licensed(), buyURL
 	return st
 }
 
@@ -393,6 +424,7 @@ type handshake struct {
 	CH   int    `json:"ch"`
 	Fmt  string `json:"fmt"`
 	Talk int    `json:"talk"` // 1: sender plays and sends talkback voice
+	Role string `json:"role"` // "talk": talkback only, the master comes from another sender
 }
 
 func validFormat(f format) bool {
@@ -431,6 +463,10 @@ func handleSender(c net.Conn) {
 		fail("bad room")
 		return
 	}
+	if hs.Role == "talk" {
+		handleTalker(c, br, name, peer)
+		return
+	}
 	f := format{hs.SR, hs.CH, hs.Fmt}
 	if !validFormat(f) {
 		fail("bad format")
@@ -450,7 +486,8 @@ func handleSender(c net.Conn) {
 	r.sender, r.senderLink, r.senderVoice = c, linkCh, voiceCh
 	r.format, r.backlog, r.backlogFrames = &f, nil, 0
 	r.sendJSON(map[string]any{"type": "format", "sr": f.SR, "ch": f.CH, "fmt": f.Fmt})
-	r.sendJSON(map[string]any{"type": "sender", "online": true, "talk": voiceCh != nil})
+	r.senderJSON()
+	r.copyToTalker(formatPayload(f))
 	r.mu.Unlock()
 	writeStatus()
 
@@ -497,7 +534,7 @@ func handleSender(c net.Conn) {
 		r.mu.Lock()
 		if r.sender == c {
 			r.sender, r.senderLink, r.senderVoice = nil, nil, nil
-			r.sendJSON(map[string]any{"type": "sender", "online": false, "talk": false})
+			r.senderJSON()
 		}
 		r.mu.Unlock()
 		writeStatus()
@@ -541,6 +578,7 @@ func handleSender(c net.Conn) {
 				r.backlog, r.backlogFrames = r.backlog[1:], r.backlogFrames-first
 			}
 			r.sendAll(wsMsg{true, p})
+			r.copyToTalker(p)
 			r.mu.Unlock()
 		case 2: // format change
 			var nf format
@@ -551,6 +589,7 @@ func handleSender(c net.Conn) {
 			r.mu.Lock()
 			r.format, r.backlog, r.backlogFrames = &nf, nil, 0
 			r.sendJSON(map[string]any{"type": "format", "sr": nf.SR, "ch": nf.CH, "fmt": nf.Fmt})
+			r.copyToTalker(formatPayload(nf))
 			r.mu.Unlock()
 			log.Printf("[%s] format %d Hz, %d ch", name, nf.SR, nf.CH)
 			writeStatus()
@@ -559,6 +598,105 @@ func handleSender(c net.Conn) {
 			if !validVoice(p) {
 				continue
 			}
+			r.mu.Lock()
+			for l := range r.listeners {
+				pushLatest(l.voice, p)
+			}
+			r.mu.Unlock()
+		}
+	}
+}
+
+func formatPayload(f format) []byte {
+	js, _ := json.Marshal(f)
+	return append([]byte{2}, js...)
+}
+
+// handleTalker serves a talk-only sender (PROTOCOL.md, "Talk-only sender").
+func handleTalker(c net.Conn, br *bufio.Reader, name, peer string) {
+	r := getRoom(name)
+	voice, master := make(chan []byte, voiceQueue), make(chan []byte, 64)
+	r.mu.Lock()
+	if r.talker != nil {
+		r.talker.Close() // newest wins
+	}
+	r.talker, r.talkerVoice, r.talkerMaster = c, voice, master
+	if r.format != nil {
+		r.copyToTalker(formatPayload(*r.format))
+	}
+	r.senderJSON()
+	r.mu.Unlock()
+
+	ok, _ := json.Marshal(map[string]string{"room": name, "link": linkFor(name)})
+	if _, err := fmt.Fprintf(c, "OK %s\n", ok); err != nil {
+		return
+	}
+	log.Printf("[%s] talk sender connected from %s", name, peer)
+
+	quit := make(chan struct{})
+	go func() { // voice first, then the master copy; 0x00, u32 len, payload
+		var hdr [5]byte
+		send := func(p []byte) bool {
+			binary.LittleEndian.PutUint32(hdr[1:], uint32(len(p)))
+			_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if _, err := c.Write(hdr[:]); err != nil {
+				return false
+			}
+			_, err := c.Write(p)
+			return err == nil
+		}
+		for {
+			select {
+			case v := <-voice:
+				if !send(v) {
+					c.Close()
+					return
+				}
+				continue
+			default:
+			}
+			select {
+			case v := <-voice:
+				if !send(v) {
+					c.Close()
+					return
+				}
+			case p := <-master:
+				if !send(p) {
+					c.Close()
+					return
+				}
+			case <-quit:
+				return
+			}
+		}
+	}()
+	defer func() {
+		close(quit)
+		r.mu.Lock()
+		if r.talker == c {
+			r.talker, r.talkerVoice, r.talkerMaster = nil, nil, nil
+			r.senderJSON()
+		}
+		r.mu.Unlock()
+		log.Printf("[%s] talk sender disconnected", name)
+	}()
+
+	var lenBuf [4]byte
+	for {
+		_ = c.SetReadDeadline(time.Now().Add(30 * time.Second))
+		if _, err := io.ReadFull(br, lenBuf[:]); err != nil {
+			return
+		}
+		n := binary.LittleEndian.Uint32(lenBuf[:])
+		if n == 0 || n > 1<<20 {
+			return
+		}
+		p := make([]byte, n)
+		if _, err := io.ReadFull(br, p); err != nil {
+			return
+		}
+		if p[0] == 4 && validVoice(p) { // the studio's voice → every listener
 			r.mu.Lock()
 			for l := range r.listeners {
 				pushLatest(l.voice, p)
@@ -593,7 +731,7 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 	r.nextID++
 	l.id = r.nextID
 	r.listeners[l] = true
-	hello, _ := json.Marshal(map[string]any{"type": "sender", "online": r.sender != nil, "talk": r.senderVoice != nil})
+	hello, _ := json.Marshal(map[string]any{"type": "sender", "online": r.sender != nil, "talk": r.talkAvail()})
 	l.out <- wsMsg{false, hello}
 	if r.format != nil {
 		fm, _ := json.Marshal(map[string]any{"type": "format", "sr": r.format.SR, "ch": r.format.CH, "fmt": r.format.Fmt})
@@ -643,7 +781,9 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 				binary.LittleEndian.PutUint16(v[1:3], l.id)
 				copy(v[3:], p[1:])
 				r.mu.Lock()
-				if r.senderVoice != nil {
+				if r.talkerVoice != nil { // a talk-only sender answers for the studio
+					pushLatest(r.talkerVoice, v)
+				} else if r.senderVoice != nil {
 					pushLatest(r.senderVoice, v)
 				}
 				r.mu.Unlock()
@@ -754,13 +894,15 @@ func main() {
 	quit := make(chan struct{})
 	var quitOnce sync.Once
 	mux.HandleFunc("/quit", func(w http.ResponseWriter, r *http.Request) {
-		if host, _, _ := net.SplitHostPort(r.RemoteAddr); !net.ParseIP(host).IsLoopback() {
+		if !isLocal(r) { // the tunnel also arrives from 127.0.0.1: nobody outside may stop us
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		io.WriteString(w, "bye")
 		quitOnce.Do(func() { close(quit) })
 	})
+	registerLicenseRoutes(mux)
+	go licenseLoop()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(getStatus())

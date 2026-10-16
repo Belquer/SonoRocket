@@ -54,6 +54,9 @@ public:
     float takeMicPeak() noexcept               { return micPeak.exchange (0.0f); }   // after echo cancel
     float takeVoicePeak() noexcept             { return voicePeak.exchange (0.0f); } // listener talking
     bool isSending() const noexcept            { return sending.load(); }
+    // Hold the mic back (ms) when the echo reference arrives late, e.g. the master copy
+    // from a DAW plugin via the relay. 0 when the master is captured with the mic.
+    void setReferenceLatencyMs (int ms) noexcept { micLag = juce::jmax (0, ms) * kRate / 1000; }
     void playTestTone() noexcept               { testTone = kRate / 2; }   // a short chime on the output, to find the right device
 
     static constexpr int kRate = RocketStreamer::kVoiceRate;
@@ -97,6 +100,7 @@ private:
     std::atomic<bool> micOpen { false }, ptt { false }, sending { false }, outReady { false };
     std::atomic<juce::uint32> lastVoiceMs { 0 };
     std::atomic<int> testTone { 0 };
+    std::atomic<int> micLag { 0 };
     double tonePhase = 0;
     std::atomic<float> playbackGain { 1.0f }, micGain { 1.0f };
     std::atomic<float> micPeak { 0.0f }, voicePeak { 0.0f };

@@ -220,9 +220,12 @@ void Talkback::processCaptured()
 
     // Keep the reference and the mic within 100 ms of each other. Same device: they
     // never drift. Two devices: start-up offset and clock drift get trimmed here.
+    // With a late reference (the master copy arriving over the network), the mic is held
+    // back by micLag so the canceller still sees the reference before its echo.
     const bool haveRef = ref.ready.load();
+    const int lag = haveRef ? micLag.load() : 0;
     if (haveRef) {
-        const int d = ref.frames16() - mic.frames16();
+        const int d = ref.frames16() - (mic.frames16() - lag);
         if (d > 1600) ref.drop16 (d);
         else if (d < -1600) mic.drop16 (-d);
     } else ref.pending.clear();
@@ -230,7 +233,7 @@ void Talkback::processCaptured()
     int16_t rec[kFrame], play[kFrame * 2], vplay[kFrame], mid[kFrame], out[kFrame];
     // the voice we played: consumed in step with the mic (silence when nothing played)
     if ((int) voiceRef.size() > 3200) voiceRef.erase (voiceRef.begin(), voiceRef.end() - 320);
-    while (mic.frames16() >= kFrame && (! haveRef || ref.frames16() >= kFrame)) {
+    while (mic.frames16() >= kFrame + lag && (! haveRef || ref.frames16() >= kFrame)) {
         const float* m = mic.pending.data();
         const float* f = haveRef ? ref.pending.data() : nullptr;
         const int vr = juce::jmin (kFrame, (int) voiceRef.size());
