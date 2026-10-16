@@ -32,6 +32,9 @@ int main (int argc, char** argv)
     tb.prepareOutput (sr);
     tb.setMicOpen (true, true);
     std::vector<float> micLine ((size_t) micDelay + 1); size_t mlp = 0;
+    // from 11 s the studio speaker also plays the listener's voice back into the mic (60 ms later)
+    const int vDelay = (int) (0.060 * sr); std::vector<float> outLine ((size_t) vDelay + 1, 0.0f); size_t olp = 0;
+    double backE = 0; long long backN = 0;
 
     juce::Random rng (7);
     // "music": filtered noise, different L/R, with a slow level wobble
@@ -64,7 +67,10 @@ int main (int argc, char** argv)
                 const float env = (float) std::pow (std::sin (M_PI * std::fmod (t * 4, 1.0)), 2);
                 v = 0.25f * env * (float) (std::sin (ph) + 0.5 * std::sin (3 * ph) + 0.3 * std::sin (5 * ph));
             }
-            micLine[mlp] = e + v; mlp = (mlp + 1) % micLine.size();
+            float voiceEcho = 0;
+            if (t >= 11.0) { voiceEcho = 0.5f * outLine[olp]; backE += voiceEcho * voiceEcho; ++backN; }
+            if (t >= 11.0 && getenv ("NOMUSIC")) e = 0;
+            micLine[mlp] = e + v + voiceEcho; mlp = (mlp + 1) % micLine.size();
             mic[i] = micLine[mlp];   // oldest = delayed by micDelay samples
             if (t >= 3 && t < 8) { echoE += e * e; ++echoN; }
             if (t >= 8 && t < 11) { voiceE += v * v; ++voiceN; }
@@ -76,6 +82,7 @@ int main (int argc, char** argv)
         tb.captureReference (L.data(), R.data(), bs);
         tb.captureMic (mic.data(), bs);
         tb.render (out.data(), bs);
+        for (int i = 0; i < bs; ++i) { outLine[olp] = out[i]; olp = (olp + 1) % outLine.size(); }
         const int phase = t < 8 ? 0 : t < 11 ? 1 : 2;
         for (int i = 0; i < bs; ++i) { outE[phase] += out[i] * out[i]; ++outN[phase]; }
         if (phase == 2) {
@@ -91,5 +98,6 @@ int main (int argc, char** argv)
     printf ("RESULT voice_in_dB %.1f\n", db (voiceE, voiceN));
     printf ("RESULT out_phase2_dB %.1f\n", db (outE[2], (double) outN[2]));
     printf ("RESULT dropped %lld\n", (long long) s.getFramesDropped());
+    printf ("RESULT voice_echo_in_dB %.1f\n", db (backE, (double) backN));
     return 0;
 }

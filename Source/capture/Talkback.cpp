@@ -96,9 +96,14 @@ void Talkback::Lane::drop16 (int frames)
 
 Talkback::Talkback (RocketStreamer& s) : juce::Thread ("SonoRocket talkback"), streamer (s)
 {
-    echo = speex_echo_state_init_mc (kFrame, kRate * kTailMs / 1000, 1, 2);   // 1 mic, master L/R as references
+    // Two cancellers in a row: the studio speakers (master L/R), then the listener's voice
+    // we play (so it can't come back to him). One canceller with both would let the loud
+    // master starve the voice path's adaptation.
+    echo = speex_echo_state_init_mc (kFrame, kRate * kTailMs / 1000, 1, 2);
+    echoVoice = speex_echo_state_init (kFrame, kRate * kTailMs / 1000);
     int rate = kRate;
     speex_echo_ctl (echo, SPEEX_ECHO_SET_SAMPLING_RATE, &rate);
+    speex_echo_ctl (echoVoice, SPEEX_ECHO_SET_SAMPLING_RATE, &rate);
     pre = speex_preprocess_state_init (kFrame, kRate);
     speex_preprocess_ctl (pre, SPEEX_PREPROCESS_SET_ECHO_STATE, echo);
     int on = 1, off = 0, suppress = -40, suppressActive = -15, noise = -15;   // gentle: no pumping
@@ -121,6 +126,7 @@ Talkback::~Talkback()
     if (up)   speex_resampler_destroy (up);
     if (pre)  speex_preprocess_state_destroy (pre);
     if (echo) speex_echo_state_destroy (echo);
+    if (echoVoice) speex_echo_state_destroy (echoVoice);
 }
 
 void Talkback::prepareReference (double sr)
@@ -128,7 +134,7 @@ void Talkback::prepareReference (double sr)
     const juce::ScopedLock sl (dspLock);
     ref.prepare (2, sr);
     mic.pending.clear();
-    speex_echo_state_reset (echo);
+    speex_echo_state_reset (echo); speex_echo_state_reset (echoVoice);
 }
 
 void Talkback::prepareMic (double sr)
@@ -136,7 +142,7 @@ void Talkback::prepareMic (double sr)
     const juce::ScopedLock sl (dspLock);
     mic.prepare (1, sr);
     ref.pending.clear();
-    speex_echo_state_reset (echo);
+    speex_echo_state_reset (echo); speex_echo_state_reset (echoVoice);
     fade = 0.0f; duck = 1.0f;
 }
 
@@ -221,20 +227,26 @@ void Talkback::processCaptured()
         else if (d < -1600) mic.drop16 (-d);
     } else ref.pending.clear();
 
-    int16_t rec[kFrame], play[kFrame * 2], out[kFrame];
+    int16_t rec[kFrame], play[kFrame * 2], vplay[kFrame], mid[kFrame], out[kFrame];
+    // the voice we played: consumed in step with the mic (silence when nothing played)
+    if ((int) voiceRef.size() > 3200) voiceRef.erase (voiceRef.begin(), voiceRef.end() - 320);
     while (mic.frames16() >= kFrame && (! haveRef || ref.frames16() >= kFrame)) {
         const float* m = mic.pending.data();
         const float* f = haveRef ? ref.pending.data() : nullptr;
+        const int vr = juce::jmin (kFrame, (int) voiceRef.size());
         for (int k = 0; k < kFrame; ++k) {
             rec[k]          = toS16 (m[k]);
             play[k * 2 + 0] = f ? toS16 (f[k * 2 + 0]) : (int16_t) 0;
             play[k * 2 + 1] = f ? toS16 (f[k * 2 + 1]) : (int16_t) 0;
+            vplay[k]        = k < vr ? toS16 (voiceRef[(size_t) k]) : (int16_t) 0;
         }
+        voiceRef.erase (voiceRef.begin(), voiceRef.begin() + vr);
         mic.drop16 (kFrame);
         if (haveRef) ref.drop16 (kFrame);
 
         // The canceller runs all the time so it stays converged, gate open or not.
-        speex_echo_cancellation (echo, rec, play, out);
+        speex_echo_cancellation (echo, rec, play, mid);
+        speex_echo_cancellation (echoVoice, mid, vplay, out);
         speex_preprocess_run (pre, out);
 
         float pk = 0.0f;
@@ -248,7 +260,7 @@ void Talkback::processCaptured()
         sending = open;
         if (! open && fade <= 0.0f) continue;
         const bool listenerTalking = juce::Time::getMillisecondCounter() - lastVoiceMs.load() < 300;
-        const float duckTarget = (listenerTalking && ! ptt.load()) ? 0.25f : 1.0f;   // −12 dB, not a mute
+        const float duckTarget = (listenerTalking && ! ptt.load()) ? 0.15f : 1.0f;   // −16 dB on top of the canceller
         const float target = open ? 1.0f : 0.0f, step = 1.0f / kFrame;
         for (int k = 0; k < kFrame; ++k) {
             fade = target > fade ? juce::jmin (target, fade + step) : juce::jmax (target, fade - step);
@@ -315,6 +327,8 @@ void Talkback::feedPlayback()
             any = true;
         }
         if (! any) break;
+        voiceRef.insert (voiceRef.end(), mix, mix + kFrame);   // echo reference, at the playback gain below
+        for (size_t k = voiceRef.size() - kFrame; k < voiceRef.size(); ++k) voiceRef[k] *= playbackGain.load();
 
         spx_uint32_t inLen = kFrame;
         spx_uint32_t outLen = (spx_uint32_t) (kFrame * outRate / kRate) + 32;

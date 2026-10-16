@@ -11,7 +11,9 @@ erle = res['echo_in_dB'] - echo_out
 print(f"talk flag on listener: {rec['talk']}, master blocks received: {rec['audioBlocks']}")
 print(f"echo only   : in {res['echo_in_dB']:.1f} dB → out {echo_out:.1f} dB  (echo removed: {erle:.1f} dB)")
 print(f"voice+echo  : voice in {res['voice_in_dB']:.1f} dB → out {voice_out:.1f} dB")
+back_out = db([f['rms'] for f in fr if mark['listen'] + 1000 <= f['t'] < mark['listen'] + 2500])
+print(f"listener's own voice leaking back: in {res['voice_echo_in_dB']:.1f} dB → sent back {back_out:.1f} dB  (removed: {res['voice_echo_in_dB'] - back_out:.1f} dB)")
 lat = mark.get('heard', 0) - rec['sentAt'] if rec['sentAt'] else None
 print(f"listener → sender voice: heard after {lat} ms, level {res['out_phase2_dB']:.1f} dB")
-ok = rec['talk'] and erle > 20 and voice_out > res['voice_in_dB'] - 10 and lat is not None and 0 < lat < 200 and res['dropped'] == 0
+ok = rec['talk'] and erle > 20 and voice_out > res['voice_in_dB'] - 10 and lat is not None and 0 < lat < 200 and res['dropped'] == 0 and res['voice_echo_in_dB'] - back_out > 15
 print('PASS' if ok else 'FAIL'); sys.exit(0 if ok else 1)

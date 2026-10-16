@@ -102,10 +102,12 @@ private:
     std::atomic<float> micPeak { 0.0f }, voicePeak { 0.0f };
 
     juce::CriticalSection dspLock;   // worker vs prepare*()
-    SpeexEchoState_* echo = nullptr;
+    SpeexEchoState_* echo = nullptr;        // studio speakers (master L/R)
+    SpeexEchoState_* echoVoice = nullptr;   // the listener's voice we play
     SpeexPreprocessState_* pre = nullptr;
 
     std::vector<float> voiceUp;
+    std::vector<float> voiceRef;   // listener voice as played (16 kHz): third echo reference
     float fade = 0.0f;   // send gate ramp, avoids clicks at open/close
     float duck = 1.0f;   // hands-free mic ducked while the listener talks
 
