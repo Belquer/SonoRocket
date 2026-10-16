@@ -72,8 +72,57 @@ type listener struct {
 	conn  *websocket.Conn
 	out   chan wsMsg  // master blocks + JSON, in order
 	voice chan []byte // talkback from the sender: tiny, written ahead of the master queue
+	video chan wsMsg  // camera frames + video control from other pages, ahead of the master
 	id    uint16
 	once  sync.Once
+
+	needKey bool // video queue overflowed: skip delta frames until the next keyframe (room lock)
+}
+
+// Video (PROTOCOL.md, "Video"): pages encode their camera (WebCodecs) and the relay
+// passes frames between the pages of a room, never to the sender, never decoded.
+const videoQueue = 48
+
+// [6][from u16][flags u8: 1 = keyframe][ts u32][encoded chunk]
+func validVideo(p []byte) bool { return len(p) > 8 && len(p) < 1<<20 }
+
+// relayVideo forwards a frame or control message from one page to the others.
+// A page that can't keep up loses its queue and waits for a keyframe, and the
+// senders are asked for one: video degrades, the master and the voice never do.
+func (r *room) relayVideo(from *listener, m wsMsg, key bool) {
+	askKey := false
+	for l := range r.listeners {
+		if l == from {
+			continue
+		}
+		if m.binary && l.needKey && !key {
+			continue
+		}
+		select {
+		case l.video <- m:
+			if m.binary && key {
+				l.needKey = false
+			}
+		default:
+			for drained := false; !drained; {
+				select {
+				case <-l.video:
+				default:
+					drained = true
+				}
+			}
+			l.needKey, askKey = true, true
+		}
+	}
+	if askKey {
+		req, _ := json.Marshal(map[string]any{"type": "vkey"})
+		for l := range r.listeners {
+			select {
+			case l.video <- wsMsg{false, req}:
+			default:
+			}
+		}
+	}
 }
 
 // Talkback voice (PROTOCOL.md, "Talkback"): 16 kHz mono int16, ~10 ms frames.
@@ -538,7 +587,7 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r := getRoom(name)
-	l := &listener{conn: conn, out: make(chan wsMsg, maxQueuedMessages), voice: make(chan []byte, voiceQueue)}
+	l := &listener{conn: conn, out: make(chan wsMsg, maxQueuedMessages), voice: make(chan []byte, voiceQueue), video: make(chan wsMsg, videoQueue)}
 
 	r.mu.Lock()
 	r.nextID++
@@ -562,10 +611,31 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 	writeStatus()
 
 	// reader: talkback from this listener (binary type 5) and noticing the close
-	conn.SetReadLimit(64 << 10)
+	conn.SetReadLimit(1 << 20) // keyframes
 	go func() {
 		for {
 			t, p, err := conn.ReadMessage()
+			if err == nil && t == websocket.BinaryMessage && len(p) > 0 && p[0] == 6 && validVideo(p) {
+				binary.LittleEndian.PutUint16(p[1:3], l.id)
+				r.mu.Lock()
+				r.relayVideo(l, wsMsg{true, p}, p[3]&1 == 1)
+				r.mu.Unlock()
+				continue
+			}
+			if err == nil && t == websocket.TextMessage {
+				// video control between pages: {"type":"vconf"|"vkey"|"vbye", ...}, stamped with the sender
+				var m map[string]any
+				if json.Unmarshal(p, &m) == nil {
+					if ty, _ := m["type"].(string); ty == "vconf" || ty == "vkey" || ty == "vbye" {
+						m["from"] = l.id
+						b, _ := json.Marshal(m)
+						r.mu.Lock()
+						r.relayVideo(l, wsMsg{false, b}, false)
+						r.mu.Unlock()
+					}
+				}
+				continue
+			}
 			if err == nil && t == websocket.BinaryMessage && len(p) > 0 && p[0] == 5 && validVoice(p) {
 				// to the sender: [5][listener id u16][seq u32][n u16][pcm]
 				v := make([]byte, len(p)+2)
@@ -584,6 +654,8 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 				if r.listeners[l] {
 					delete(r.listeners, l)
 					l.close()
+					bye, _ := json.Marshal(map[string]any{"type": "vbye", "from": l.id})
+					r.relayVideo(l, wsMsg{false, bye}, false)
 				}
 				r.mu.Unlock()
 				return
@@ -594,6 +666,12 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 		_ = conn.SetWriteDeadline(time.Now().Add(20 * time.Second))
 		return conn.WriteMessage(t, b) == nil
 	}
+	writeMsg := func(m wsMsg) bool {
+		if m.binary {
+			return write(websocket.BinaryMessage, m.data)
+		}
+		return write(websocket.TextMessage, m.data)
+	}
 	for {
 		select { // talkback first, always
 		case v := <-l.voice:
@@ -603,9 +681,21 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 			continue
 		default:
 		}
+		select { // then video: the master has a 2 s buffer, the picture doesn't
+		case m := <-l.video:
+			if !writeMsg(m) {
+				goto done
+			}
+			continue
+		default:
+		}
 		select {
 		case v := <-l.voice:
 			if !write(websocket.BinaryMessage, v) {
+				goto done
+			}
+		case m := <-l.video:
+			if !writeMsg(m) {
 				goto done
 			}
 		case m, ok := <-l.out:

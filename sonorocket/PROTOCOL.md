@@ -76,3 +76,19 @@ Gate (both sides): with the DAW stopped (master below −60 dBFS for 0.7 s) the 
 while it plays, the mic only opens while T (or the talk button, or a MIDI pedal on the
 capture app) is held. The capture app cancels the studio speakers' echo from the
 talkback mic using the master it captures as the reference (speexdsp, 250 ms tail).
+
+## Video (between pages)
+
+Pages encode their camera with WebCodecs (H.264 Annex B, else VP8; 640×360, 15 fps,
+~700 kbit/s) and send it over the same WebSocket; the relay passes it to the other pages
+of the room (never to the sender) and never decodes it. Priority: voice, then video,
+then the master (which has its 2 s buffer).
+
+* Page → relay, binary: `[6][0 u16][flags u8, 1 = keyframe][ts ms u32][chunk]`; the relay
+  stamps the sender's id into bytes 1–2 before forwarding.
+* Text, page ↔ page via the relay (stamped with `from`): `{"type":"vconf","codec":..,"w":..,"h":..}`,
+  `{"type":"vkey"}` (please send config + a keyframe), `{"type":"vbye"}`.
+* A page whose video queue overflows loses it, skips delta frames until the next keyframe,
+  and the relay asks the senders for one.
+* `?studio=1` is the studio's page (opened by the capture app's "Vídeo" button on
+  `http://127.0.0.1:8080`): camera only, no master audio.

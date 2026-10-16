@@ -16,7 +16,7 @@ PRIMEIRA VEZ
 TODA VEZ
 1. Dois cliques em SonoRocket.exe.
 2. Espere o link aparecer (uns 10 segundos).
-3. Clique em "Mandar no WhatsApp" e escolha o dB.
+3. Clique em "WhatsApp" e escolha o dB (o link também fica copiado: Ctrl+V).
 4. Dê play no Pro Tools. Pronto.
 Deixe o SonoRocket aberto enquanto ele estiver ouvindo. Para encerrar, feche a janela.
 
@@ -35,6 +35,13 @@ TALKBACK (falar com o dB sem os 2 segundos de atraso)
      ou um pedal ligado neste PC (pedal MIDI, ou pedal USB programado como Ctrl+T).
    O som das caixas que vaza no microfone é cancelado automaticamente.
    Pode desligar o áudio do Google Meet.
+
+VÍDEO (substitui o Google Meet)
+1. Ligue a webcam neste PC.
+2. Clique em "Vídeo" no SonoRocket: abre uma página no navegador (Chrome ou Edge).
+   Permita a câmera. Você vê o dB grande e a sua imagem pequena no canto.
+3. O dB liga a câmera dele na página dele ("Ligar câmera").
+   O áudio continua pelo SonoRocket (mix + talkback); a página de vídeo não tem som.
 
 SE ALGO NÃO FUNCIONAR
 - "sem sinal na entrada": a entrada escolhida não está recebendo som. Confira o cabo

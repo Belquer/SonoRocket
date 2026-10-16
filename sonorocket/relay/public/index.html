@@ -98,6 +98,18 @@
   #talkBtn { flex: 1 1 auto; width: auto; padding: 10px; font-size: 15px; }
   .talk .mini { height: 4px; }
   .phones { display: flex; align-items: center; gap: 4px; margin: 0; font-size: 12px; color: var(--dim); flex: 0 0 auto; cursor: pointer; }
+  .stage { position: relative; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16 / 9; max-height: 46vh; width: 100%; margin: 0 auto; }
+  .stage canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .stage video { position: absolute; right: 8px; bottom: 8px; width: 24%; border-radius: 6px; border: 1px solid var(--line); transform: scaleX(-1); background: #000; }
+  .vstate { position: absolute; left: 8px; top: 8px; background: color-mix(in srgb, var(--bg) 70%, transparent); }
+  #detailsBtn { display: none; }
+  @media (max-width: 819px) {
+    #detailsBtn { display: block; justify-self: start; }
+    .details:not(.open) { display: none; }
+  }
+  body.studio #playBtn, body.studio #outPanel, body.studio #talkPanel, body.studio #details, body.studio #detailsBtn { display: none !important; }
+  body.studio .cols { grid-template-columns: 1fr; }
+  body.studio .stage { max-height: 78vh; }
   footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; }
 </style>
 </head>
@@ -114,7 +126,19 @@
 
   <div class="cols">
     <div class="col">
-      <section class="panel">
+      <section class="panel video" id="videoPanel">
+        <div class="stage">
+          <canvas id="remoteVid" width="640" height="360"></canvas>
+          <video id="selfVid" muted playsinline autoplay class="hidden"></video>
+          <span class="chip vstate" id="vidState">sem vídeo</span>
+        </div>
+        <div class="line">
+          <button class="ghost tiny" id="camBtn">Ligar câmera</button>
+          <span class="sub grow" id="vidInfo"></span>
+        </div>
+      </section>
+
+      <section class="panel" id="outPanel">
         <div class="meters">
           <div class="meter"><span>L</span><div class="bar"><i id="mL"></i></div><span id="dL">−∞</span></div>
           <div class="meter"><span>R</span><div class="bar"><i id="mR"></i></div><span id="dR">−∞</span></div>
@@ -146,7 +170,8 @@
       </section>
     </div>
 
-    <div class="col">
+    <button class="ghost tiny" id="detailsBtn">detalhes ▾</button>
+    <div class="col details" id="details">
       <section class="panel buf">
         <div class="line">
           <span class="lab">buffer</span>
@@ -192,6 +217,9 @@ function crc32(u8) { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c =
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
+// ?studio=1: the page the studio opens next to the capture app: camera only, no master audio
+const STUDIO = params.get('studio') === '1';
+if (STUDIO) document.body.classList.add('studio');
 let roomName = params.get('room') || '';
 $('roomInput').value = roomName;
 if (roomName) { $('joinPanel').classList.add('hidden'); $('roomLabel').textContent = roomName; }
@@ -237,16 +265,17 @@ function connect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${proto}//${location.host}/ws?room=${encodeURIComponent(roomName)}`);
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => { reconnectDelay = 500; };
+  ws.onopen = () => { reconnectDelay = 500; videoOnOpen(); };
   ws.onmessage = async (e) => {
     if (typeof e.data === 'string') {
       const m = JSON.parse(e.data);
+      if (m.type === 'vconf' || m.type === 'vkey' || m.type === 'vbye') { videoControl(m); return; }
       if (m.type === 'sender') {
         chip('cSender', m.online ? 'emissor: ao vivo' : 'emissor: offline', m.online ? 'ok' : 'warn');
         talkAvail = !!(m.online && m.talk);
         $('talkPanel').classList.toggle('hidden', !talkAvail);
       }
-      if (m.type === 'format') {
+      if (m.type === 'format' && !STUDIO) {
         format = m; lastSeq = null;
         chip('cFormat', `formato: ${m.sr} Hz · ${m.ch}ch · float32`, 'ok');
         await buildAudio(m.sr, m.ch);
@@ -254,6 +283,7 @@ function connect() {
       }
       return;
     }
+    if (new Uint8Array(e.data, 0, 1)[0] === 6) { videoFrame(e.data); return; }
     if (!node || !format) return;
     const dv = new DataView(e.data);
     if (dv.getUint8(0) === 4) {   // talkback from the studio: straight to the voice player
@@ -437,6 +467,109 @@ setInterval(() => {
   chip('cPeer', talking ? 'estúdio: falando' : 'estúdio: quieto', talking ? 'ok' : '');
   peerPeak *= 0.9;
 }, 33);
+
+// ---------- video ----------
+// Each page encodes its camera with WebCodecs (H.264, else VP8), 640x360 @ 15 fps,
+// ~700 kbit/s, and the relay passes the frames to the other pages of the room.
+// Like the voice, it never waits behind the master; a page that falls behind skips to
+// the next keyframe.
+const VW = 640, VH = 360, FPS = 15;
+let camStream = null, enc = null, encCfg = null, grabTimer = null, forceKey = true, frameNo = 0;
+let dec = null, decFrom = null, decCodec = null, decReady = false, lastRemote = 0, keyAsked = 0;
+const remoteCv = $('remoteVid'), rctx = remoteCv.getContext('2d'), selfVid = $('selfVid');
+const wsOpen = () => ws && ws.readyState === 1;
+const sendJSON = (o) => { if (wsOpen()) ws.send(JSON.stringify(o)); };
+const vstate = (t, cls) => { const el = $('vidState'); el.textContent = t; el.className = 'chip vstate' + (cls ? ' ' + cls : ''); };
+vstate('sem vídeo', '');
+$('detailsBtn').onclick = () => { const d = $('details'); d.classList.toggle('open'); $('detailsBtn').textContent = d.classList.contains('open') ? 'detalhes ▴' : 'detalhes ▾'; };
+
+async function pickCodec() {
+  for (const codec of ['avc1.42E01F', 'vp8']) {
+    const cfg = { codec, width: VW, height: VH, bitrate: 700000, framerate: FPS, latencyMode: 'realtime' };
+    if (codec.startsWith('avc1')) cfg.avc = { format: 'annexb' };
+    try { if ((await VideoEncoder.isConfigSupported(cfg)).supported) return cfg; } catch {}
+  }
+  return null;
+}
+function sendConf() { if (encCfg) sendJSON({ type: 'vconf', codec: encCfg.codec, w: VW, h: VH }); }
+function videoOnOpen() { sendJSON({ type: 'vkey' }); sendConf(); forceKey = true; }   // ask the others for their picture
+
+async function startCam() {
+  if (!('VideoEncoder' in window)) { $('vidInfo').textContent = 'este navegador não envia vídeo (use Chrome, Edge ou Safari recente)'; return; }
+  try { camStream = await navigator.mediaDevices.getUserMedia({ video: { width: VW, height: VH, frameRate: FPS }, audio: false }); }
+  catch { $('vidInfo').textContent = 'sem permissão para a câmera'; return; }
+  selfVid.srcObject = camStream; selfVid.classList.remove('hidden');
+  encCfg = await pickCodec();
+  if (!encCfg) { $('vidInfo').textContent = 'sem codificador de vídeo neste navegador'; return; }
+  enc = new VideoEncoder({
+    output: (chunk) => {
+      if (!wsOpen()) return;
+      const buf = new ArrayBuffer(8 + chunk.byteLength), dv = new DataView(buf);
+      dv.setUint8(0, 6); dv.setUint8(3, chunk.type === 'key' ? 1 : 0); dv.setUint32(4, Math.round(chunk.timestamp / 1000) >>> 0, true);
+      chunk.copyTo(new Uint8Array(buf, 8));
+      ws.send(buf);
+    },
+    error: () => { forceKey = true; try { enc.configure(encCfg); } catch {} },
+  });
+  enc.configure(encCfg);
+  if (!ws) connect(); else sendConf();
+  forceKey = true;
+  grabTimer = setInterval(() => {
+    if (!enc || enc.state !== 'configured' || selfVid.readyState < 2 || !wsOpen()) return;
+    if (ws.bufferedAmount > 1e6 || enc.encodeQueueSize > 2) { forceKey = true; return; }   // congested: skip, resync with a keyframe
+    const vf = new VideoFrame(selfVid, { timestamp: Math.round(performance.now() * 1000) });
+    enc.encode(vf, { keyFrame: forceKey || frameNo % (FPS * 2) === 0 });
+    vf.close(); forceKey = false; frameNo++;
+  }, 1000 / FPS);
+  $('camBtn').textContent = 'Desligar câmera';
+  $('vidInfo').textContent = encCfg.codec.startsWith('avc1') ? 'H.264 · 640×360' : 'VP8 · 640×360';
+}
+function stopCam() {
+  clearInterval(grabTimer); grabTimer = null;
+  if (enc) { try { enc.close(); } catch {} enc = null; }
+  if (camStream) camStream.getTracks().forEach((t) => t.stop());
+  camStream = null; encCfg = null; selfVid.classList.add('hidden');
+  sendJSON({ type: 'vbye' });
+  $('camBtn').textContent = 'Ligar câmera'; $('vidInfo').textContent = '';
+}
+$('camBtn').onclick = () => (camStream ? stopCam() : startCam());
+
+function askKey() { const now = performance.now(); if (now - keyAsked > 1000) { keyAsked = now; sendJSON({ type: 'vkey' }); } }
+function videoControl(m) {
+  if (m.type === 'vkey') { if (enc) { forceKey = true; sendConf(); } return; }
+  if (m.type === 'vbye') { if (m.from === decFrom) { dec && dec.close(); dec = null; decFrom = null; rctx.clearRect(0, 0, remoteCv.width, remoteCv.height); vstate('sem vídeo', ''); } return; }
+  if (!('VideoDecoder' in window)) { vstate('navegador sem vídeo', 'warn'); return; }
+  if (dec && m.from === decFrom && m.codec === decCodec) return;
+  if (dec) { try { dec.close(); } catch {} }
+  decFrom = m.from; decCodec = m.codec; decReady = false;
+  dec = new VideoDecoder({
+    output: (f) => {
+      if (remoteCv.width !== f.displayWidth) { remoteCv.width = f.displayWidth; remoteCv.height = f.displayHeight; }
+      rctx.drawImage(f, 0, 0); f.close();
+      lastRemote = performance.now();
+    },
+    error: () => { decReady = false; try { dec.configure({ codec: decCodec, optimizeForLatency: true }); } catch {} askKey(); },
+  });
+  dec.configure({ codec: m.codec, optimizeForLatency: true });
+  askKey();
+}
+function videoFrame(buf) {
+  const dv = new DataView(buf), from = dv.getUint16(1, true), key = (dv.getUint8(3) & 1) === 1;
+  if (!dec || from !== decFrom) { askKey(); return; }   // haven't got its config yet
+  if (!decReady && !key) return;
+  if (key) decReady = true;
+  if (dec.decodeQueueSize > 8) { decReady = false; askKey(); return; }   // falling behind: jump to a keyframe
+  try { dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: dv.getUint32(4, true) * 1000, data: new Uint8Array(buf, 8) })); }
+  catch { decReady = false; askKey(); }
+}
+setInterval(() => {
+  const live = performance.now() - lastRemote < 2000;
+  if (decFrom !== null) vstate(live ? '● ao vivo' : 'sem imagem', live ? 'ok' : 'warn');
+}, 500);
+if (STUDIO) {   // the studio page: connect straight away, camera on
+  $('roomLabel').textContent = (roomName || '') + ' · estúdio';
+  if (roomName) { connect(); startCam(); }
+}
 
 $('resyncBtn').onclick = () => { node && node.port.postMessage({ type: 'flush' }); };
 $('copyBtn').onclick = async () => {

@@ -290,8 +290,8 @@ public:
             bool ok = Process::openDocument ("whatsapp://send?text=" + q, {});
             if (! ok) ok = URL ("https://web.whatsapp.com/send?text=" + q).launchInDefaultBrowser();
             trace (String ("whatsapp: ") + (ok ? "opened" : "failed"));
-            whatsBtn.setButtonText (ok ? u8 ("Link copiado · cole no WhatsApp") : u8 ("Link copiado (Ctrl+V)"));
-            Timer::callAfterDelay (4000, [safeThis] { if (safeThis != nullptr) safeThis->whatsBtn.setButtonText ("Mandar no WhatsApp"); });
+            whatsBtn.setButtonText (u8 ("Link copiado"));
+            Timer::callAfterDelay (4000, [safeThis] { if (safeThis != nullptr) safeThis->whatsBtn.setButtonText ("WhatsApp"); });
         };
         styleButton (streamBtn, kOrange, Colours::black);
         streamBtn.onClick = [this] {
@@ -300,7 +300,13 @@ public:
             streamer.setConfig (c2);
             props->setValue ("enabled", c2.enabled);
         };
-        addAndMakeVisible (copyBtn); addAndMakeVisible (whatsBtn); addAndMakeVisible (streamBtn);
+        // the studio's video page: camera + the listener's picture, served by our own relay
+        styleButton (videoBtn, kLine, kText);
+        videoBtn.onClick = [this] {
+            URL ("http://127.0.0.1:8080/?room=" + URL::addEscapeChars (props->getValue ("room"), true) + "&studio=1").launchInDefaultBrowser();
+            trace ("video: opened studio page");
+        };
+        addAndMakeVisible (copyBtn); addAndMakeVisible (whatsBtn); addAndMakeVisible (streamBtn); addAndMakeVisible (videoBtn);
 
         tip.setText (u8 ("Dica: use \"Windows Audio (Exclusive Mode)\" ou ASIO e a mesma taxa (ex.: 48000) do Pro Tools. Pelo S/PDIF chega bit a bit."), dontSendNotification);
         tip.setColour (Label::textColourId, kDim);
@@ -410,9 +416,12 @@ public:
             link.setBounds (s.removeFromTop (36));
             s.removeFromTop (10);
             auto row = s.removeFromTop (40);
-            copyBtn.setBounds (row.removeFromLeft (row.getWidth() / 2 - 5));
+            const int w3 = (row.getWidth() - 20) / 3;
+            copyBtn.setBounds (row.removeFromLeft (w3));
             row.removeFromLeft (10);
-            whatsBtn.setBounds (row);
+            whatsBtn.setBounds (row.removeFromLeft (w3));
+            row.removeFromLeft (10);
+            videoBtn.setBounds (row);
             s.removeFromTop (10);
             streamBtn.setBounds (s.removeFromTop (44));
         }
@@ -860,7 +869,7 @@ private:
     ComboBox masterBox, micBox, outBox;
     Slider talkVol;
     HoldButton talkBtn { "Segure para falar (Ctrl+T)" };
-    TextButton copyBtn { "Copiar link" }, whatsBtn { "Mandar no WhatsApp" }, streamBtn { "Parar" };
+    TextButton copyBtn { "Copiar link" }, whatsBtn { "WhatsApp" }, streamBtn { "Parar" }, videoBtn { u8 ("Vídeo") };
     juce::Rectangle<int> inputPanel, sharePanel, talkPanel;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
