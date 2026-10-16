@@ -203,9 +203,10 @@ public:
         std::unique_ptr<XmlElement> saved (props->getXmlValue ("audio"));
         // every input and output is opened; which ones are the master, the talkback mic
         // and the talkback output is chosen below (and remembered)
-        const auto audioErr = deviceManager.initialise (kMaxCh, kMaxCh, saved.get(), true);
-        if (! props->getBoolValue ("talkOutChosen", false)) {
-            // never grab a Windows output (exclusive mode) until the talkback asks for one
+        // Capture only: an output here can stop the input (WASAPI exclusive refuses
+        // in/out pairs with different buffer sizes). The talkback output has its own device.
+        const auto audioErr = deviceManager.initialise (kMaxCh, 0, saved.get(), true);
+        {
             auto setup = deviceManager.getAudioDeviceSetup();
             if (setup.outputDeviceName.isNotEmpty()) { setup.outputDeviceName = {}; deviceManager.setAudioDeviceSetup (setup, true); }
         }
@@ -223,7 +224,7 @@ public:
         deviceManager.addChangeListener (this);
 
         // min = max = kMaxCh hides the channel tick-boxes: channels are picked in the Talkback panel
-        selector = std::make_unique<AudioDeviceSelectorComponent> (deviceManager, kMaxCh, kMaxCh, kMaxCh, kMaxCh, false, false, true, false);
+        selector = std::make_unique<AudioDeviceSelectorComponent> (deviceManager, kMaxCh, kMaxCh, 0, 0, false, false, true, false);
         addAndMakeVisible (*selector);
 
         // --- streamer (to our own relay on this computer)
@@ -295,7 +296,11 @@ public:
         // --- talkback
         masterStart = props->getIntValue ("masterStart", 0);
         micChannel  = props->getIntValue ("talkMic", -1);
-        outStart    = props->getIntValue ("talkOut", -1);
+        micDevName  = props->getValue ("talkMicDevice");
+        micDevCh    = props->getIntValue ("talkMicCh", 0);
+        talkOutName = props->getValue ("talkOutDevice");
+        initVoiceOutput();
+        initMicInput();
         talkback.setPlaybackGain (Decibels::decibelsToGain ((float) props->getDoubleValue ("talkVol", 0.0)));
 
         talkTitle.setText (u8 ("Talkback (fala com o dB, sem os 2 s de atraso)"), dontSendNotification);
@@ -306,12 +311,17 @@ public:
         }
         masterLab.setText ("Master (Pro Tools)", dontSendNotification);
         micLab.setText ("Microfone", dontSendNotification);
-        outLab.setText (u8 ("Voz do dB sai em"), dontSendNotification);
+        outLab.setText (u8 ("Voz do dB sai em"), dontSendNotification);   // its own output device
         volLab.setText ("Volume da voz", dontSendNotification);
         for (auto* b : { &masterBox, &micBox, &outBox }) addAndMakeVisible (*b);
         masterBox.onChange = [this] { masterStart = jmax (0, (masterBox.getSelectedId() - 1) * 2); props->setValue ("masterStart", masterStart.load()); updateStreamFormat(); };
-        micBox.onChange = [this] { micChannel = micBox.getSelectedId() - 2; props->setValue ("talkMic", micChannel.load()); updateTalkEnabled(); };
-        outBox.onChange = [this] { outStart = outBox.getSelectedId() >= 2 ? (outBox.getSelectedId() - 2) * 2 : -1; props->setValue ("talkOut", outStart.load()); updateTalkEnabled(); };
+        micBox.onChange = [this] { chooseMic (micBox.getSelectedId()); };
+        outBox.onChange = [this] {
+            talkOutName = outBox.getSelectedId() >= 2 ? outBox.getText() : String();
+            props->setValue ("talkOutDevice", talkOutName);
+            openVoiceOutput();
+            updateTalkEnabled();
+        };
         talkVol.setSliderStyle (Slider::LinearHorizontal);
         talkVol.setTextBoxStyle (Slider::TextBoxRight, false, 60, 20);
         talkVol.setRange (-40.0, 12.0, 0.5);
@@ -348,6 +358,10 @@ public:
         deviceManager.removeAudioCallback (this);
         deviceManager.removeChangeListener (this);
         midiInputs.clear();
+        micIn.removeAudioCallback (&micInCb);
+        micIn.closeAudioDevice();
+        voiceOut.removeAudioCallback (&voiceOutCb);
+        voiceOut.closeAudioDevice();
         saveAudioState();
         relay.stop();
         Logger::setCurrentLogger (nullptr);
@@ -434,11 +448,11 @@ private:
     void audioDeviceAboutToStart (AudioIODevice* d) override
     {
         devIns = d->getActiveInputChannels().countNumberOfSetBits();
-        devOuts = d->getActiveOutputChannels().countNumberOfSetBits();
         const int chans = masterStart.load() + 1 < devIns ? 2 : 1;
-        trace ("audio: started " + d->getName() + " @ " + String (d->getCurrentSampleRate()) + " Hz, " + String (devIns.load()) + " in / " + String (devOuts.load()) + " out");
+        trace ("audio: started " + d->getName() + " @ " + String (d->getCurrentSampleRate()) + " Hz, " + String (devIns.load()) + " in");
         streamer.prepare (d->getCurrentSampleRate(), chans);
-        talkback.prepare (d->getCurrentSampleRate());
+        talkback.prepareReference (d->getCurrentSampleRate());
+        if (micChannel.load() >= 0) talkback.prepareMic (d->getCurrentSampleRate());
         sampleRate = d->getCurrentSampleRate();
     }
     void audioDeviceStopped() override {}
@@ -467,18 +481,14 @@ private:
         if (chans == 1) peak[1].store (peak[0].load());
         if (loud > kPlayingThreshold) dawLoud = true;
 
-        // talkback: mic on its own input, the master as echo reference, voice to an output pair
-        const int mic = micChannel.load(), o0 = outStart.load();
-        float* voiceOut = (o0 >= 0 && o0 < numOut) ? out[o0] : nullptr;
-        talkback.process ((mic >= 0 && mic < numIn) ? in[mic] : nullptr, master[0], master[1], voiceOut, n);
-        if (voiceOut != nullptr && o0 + 1 < numOut && out[o0 + 1] != nullptr)
-            FloatVectorOperations::copy (out[o0 + 1], voiceOut, n);
+        // talkback: the master is the echo reference; the mic may be another input here
+        talkback.captureReference (master[0], master[1], n);
+        const int mic = micChannel.load();
+        if (mic >= 0 && mic < numIn) talkback.captureMic (in[mic], n);
     }
 
     void changeListenerCallback (ChangeBroadcaster*) override
     {
-        auto setup = deviceManager.getAudioDeviceSetup();
-        if (setup.outputDeviceName.isNotEmpty()) props->setValue ("talkOutChosen", true);
         openAllChannels();
         refreshChannelBoxes();
         saveAudioState();
@@ -490,13 +500,12 @@ private:
         auto* dev = deviceManager.getCurrentAudioDevice();
         if (dev == nullptr) return;
         auto setup = deviceManager.getAudioDeviceSetup();
-        BigInteger ins, outs;
+        BigInteger ins;
         ins.setRange (0, jmin (kMaxCh, dev->getInputChannelNames().size()), true);
-        outs.setRange (0, jmin (kMaxCh, dev->getOutputChannelNames().size()), true);
-        if (setup.inputChannels == ins && setup.outputChannels == outs && ! setup.useDefaultInputChannels && ! setup.useDefaultOutputChannels)
+        if (setup.inputChannels == ins && ! setup.useDefaultInputChannels)
             return;
-        setup.useDefaultInputChannels = setup.useDefaultOutputChannels = false;
-        setup.inputChannels = ins; setup.outputChannels = outs;
+        setup.useDefaultInputChannels = false;
+        setup.inputChannels = ins;
         deviceManager.setAudioDeviceSetup (setup, true);
     }
 
@@ -504,7 +513,6 @@ private:
     {
         auto* dev = deviceManager.getCurrentAudioDevice();
         const auto ins = dev ? dev->getInputChannelNames() : StringArray();
-        const auto outs = dev ? dev->getOutputChannelNames() : StringArray();
         auto nameOf = [] (const StringArray& a, int i) { return String (i + 1) + (a[i].isNotEmpty() && a[i] != String (i + 1) ? " (" + a[i] + ")" : String()); };
 
         masterBox.clear (dontSendNotification);
@@ -512,16 +520,29 @@ private:
             masterBox.addItem (i + 1 < ins.size() ? "Entradas " + String (i + 1) + "-" + String (i + 2) : "Entrada " + String (i + 1), i / 2 + 1);
         masterBox.setSelectedId (jlimit (1, jmax (1, masterBox.getNumItems()), masterStart.load() / 2 + 1), dontSendNotification);
 
+        // the mic: another input of this device, or any other input device
+        // (Windows often shows each input pair of an interface as its own device)
         micBox.clear (dontSendNotification);
         micBox.addItem ("Desligado", 1);
         for (int i = 0; i < ins.size(); ++i) micBox.addItem ("Entrada " + nameOf (ins, i), i + 2);
-        micBox.setSelectedId (micChannel.load() >= 0 && micChannel.load() < ins.size() ? micChannel.load() + 2 : 1, dontSendNotification);
+        micDevices.clear();
+        if (auto* t = micIn.getCurrentDeviceTypeObject()) micDevices = t->getDeviceNames (true);
+        if (micDevices.size() > 0) micBox.addSectionHeading ("Outros dispositivos");
+        for (int d = 0; d < micDevices.size(); ++d)
+            for (int c = 0; c < 2; ++c)
+                micBox.addItem (micDevices[d] + " · canal " + String (c + 1), 1000 + d * 2 + c);
+        int sel = 1;
+        if (micChannel.load() >= 0 && micChannel.load() < ins.size()) sel = micChannel.load() + 2;
+        else if (micDevName.isNotEmpty() && micDevices.contains (micDevName)) sel = 1000 + micDevices.indexOf (micDevName) * 2 + micDevCh.load();
+        micBox.setSelectedId (sel, dontSendNotification);
 
         outBox.clear (dontSendNotification);
-        outBox.addItem (outs.isEmpty() ? u8 ("Desligado (escolha a saída lá embaixo)") : String ("Desligado"), 1);
-        for (int i = 0; i < outs.size(); i += 2)
-            outBox.addItem (i + 1 < outs.size() ? u8 ("Saídas ") + String (i + 1) + "-" + String (i + 2) : u8 ("Saída ") + String (i + 1), i / 2 + 2);
-        outBox.setSelectedId (outStart.load() >= 0 && outStart.load() < outs.size() ? outStart.load() / 2 + 2 : 1, dontSendNotification);
+        outBox.addItem ("Desligado", 1);
+        StringArray outs;
+        if (auto* t = voiceOut.getCurrentDeviceTypeObject()) outs = t->getDeviceNames (false);
+        for (int i = 0; i < outs.size(); ++i) outBox.addItem (outs[i], i + 2);
+        const int outSel = outs.indexOf (talkOutName);
+        outBox.setSelectedId (outSel >= 0 ? outSel + 2 : 1, dontSendNotification);
         updateTalkEnabled();
     }
 
@@ -533,10 +554,107 @@ private:
 
     void updateTalkEnabled()
     {
-        const bool on = micChannel.load() >= 0 || outStart.load() >= 0;
+        const bool on = micChannel.load() >= 0 || micDevName.isNotEmpty() || talkOutName.isNotEmpty();
         if (on != streamer.isTalkbackEnabled()) trace (String ("talkback: ") + (on ? "on" : "off"));
         streamer.setTalkbackEnabled (on);
     }
+
+    // ---- talkback mic from another device (shared mode, never touches the capture)
+    void initMicInput()
+    {
+        micIn.initialise (2, 0, nullptr, false);
+       #if JUCE_WINDOWS
+        micIn.setCurrentAudioDeviceType ("Windows Audio", false);
+       #endif
+        if (auto* t = micIn.getCurrentDeviceTypeObject()) t->scanForDevices();
+        micIn.closeAudioDevice();
+        micIn.addAudioCallback (&micInCb);
+        if (micChannel.load() < 0 && micDevName.isNotEmpty()) openMicDevice();
+    }
+    void openMicDevice()
+    {
+        auto setup = micIn.getAudioDeviceSetup();
+        setup.outputDeviceName = {};
+        setup.inputDeviceName = micDevName;
+        setup.useDefaultInputChannels = true;
+        const auto err = micIn.setAudioDeviceSetup (setup, true);
+        trace ("talkback mic: " + micDevName + " ch " + String (micDevCh.load() + 1) + (err.isNotEmpty() ? "  ERROR " + err : String()));
+        if (err.isNotEmpty()) micIn.closeAudioDevice();
+    }
+    void chooseMic (int id)
+    {
+        // stop feeding the mic lane before it is rebuilt
+        micChannel = -1;
+        micIn.closeAudioDevice();
+        Thread::sleep (60);
+        if (id >= 1000) {
+            micDevName = micDevices[(id - 1000) / 2];
+            micDevCh = (id - 1000) % 2;
+            openMicDevice();
+        } else {
+            micDevName = {};
+            if (id >= 2) {
+                if (auto* d = deviceManager.getCurrentAudioDevice()) talkback.prepareMic (d->getCurrentSampleRate());
+                micChannel = id - 2;
+            } else talkback.stopMic();
+        }
+        props->setValue ("talkMic", micChannel.load());
+        props->setValue ("talkMicDevice", micDevName);
+        props->setValue ("talkMicCh", micDevCh.load());
+        updateTalkEnabled();
+    }
+    struct MicInCallback : AudioIODeviceCallback
+    {
+        MicInCallback (SonoRocket::Talkback& t, std::atomic<int>& c) : tb (t), ch (c) {}
+        void audioDeviceAboutToStart (AudioIODevice* d) override { tb.prepareMic (d->getCurrentSampleRate()); }
+        void audioDeviceStopped() override {}
+        void audioDeviceIOCallbackWithContext (const float* const* in, int numIn, float* const* out, int numOut, int n,
+                                               const AudioIODeviceCallbackContext&) override
+        {
+            for (int c = 0; c < numOut; ++c) if (out[c]) FloatVectorOperations::clear (out[c], n);
+            if (numIn <= 0) return;
+            const int c = jlimit (0, numIn - 1, ch.load());
+            if (in[c] != nullptr) tb.captureMic (in[c], n);
+        }
+        SonoRocket::Talkback& tb;
+        std::atomic<int>& ch;
+    };
+
+    // ---- talkback output: its own device, shared mode, so it can never take the capture down
+    void initVoiceOutput()
+    {
+        voiceOut.initialise (0, 2, nullptr, false);
+       #if JUCE_WINDOWS
+        voiceOut.setCurrentAudioDeviceType ("Windows Audio", false);   // shared mode: plays alongside anything
+       #endif
+        if (auto* t = voiceOut.getCurrentDeviceTypeObject()) t->scanForDevices();
+        voiceOut.addAudioCallback (&voiceOutCb);
+        openVoiceOutput();
+    }
+    void openVoiceOutput()
+    {
+        auto setup = voiceOut.getAudioDeviceSetup();
+        setup.inputDeviceName = {};
+        setup.outputDeviceName = talkOutName;
+        setup.useDefaultOutputChannels = true;
+        if (talkOutName.isEmpty()) { voiceOut.closeAudioDevice(); return; }
+        const auto err = voiceOut.setAudioDeviceSetup (setup, true);
+        trace ("talkback out: " + talkOutName + (err.isNotEmpty() ? "  ERROR " + err : String()));
+    }
+    struct VoiceOutCallback : AudioIODeviceCallback
+    {
+        explicit VoiceOutCallback (SonoRocket::Talkback& t) : tb (t) {}
+        void audioDeviceAboutToStart (AudioIODevice* d) override { tb.prepareOutput (d->getCurrentSampleRate()); }
+        void audioDeviceStopped() override {}
+        void audioDeviceIOCallbackWithContext (const float* const*, int, float* const* out, int numOut, int n,
+                                               const AudioIODeviceCallbackContext&) override
+        {
+            if (numOut <= 0 || out[0] == nullptr) return;
+            tb.render (out[0], n);
+            for (int c = 1; c < numOut; ++c) if (out[c]) FloatVectorOperations::copy (out[c], out[0], n);
+        }
+        SonoRocket::Talkback& tb;
+    };
 
     // ---- MIDI pedal / button: any note held, or sustain (CC64) down, = hold to talk
     void openMidiInputs()
@@ -576,8 +694,9 @@ private:
        #endif
         const bool keyT = tDown && (Process::isForegroundProcess() || ctrl);
         const bool ptt = keyT || talkBtn.held() || midiNotes.load() > 0 || midiPedal.load();
-        const bool haveMic = micChannel.load() >= 0 && micChannel.load() < devIns;
-        talkback.setMicOpen (haveMic && streamer.getState() == State::Streaming && (! playing || ptt));
+        const bool haveMic = (micChannel.load() >= 0 && micChannel.load() < devIns)
+                          || (micDevName.isNotEmpty() && micIn.getCurrentAudioDevice() != nullptr);
+        talkback.setMicOpen (haveMic && streamer.getState() == State::Streaming && (! playing || ptt), ptt);
 
         micHeld = jmax (talkback.takeMicPeak(), micHeld * 0.85f);
         micMeter.setLevel (micHeld);
@@ -658,8 +777,14 @@ private:
     SonoRocket::Talkback talkback { streamer };
     RelayManager relay;
     std::vector<std::unique_ptr<MidiInput>> midiInputs;
-    std::atomic<int> masterStart { 0 }, micChannel { -1 }, outStart { -1 };
-    std::atomic<int> devIns { 0 }, devOuts { 0 };
+    std::atomic<int> masterStart { 0 }, micChannel { -1 };
+    std::atomic<int> devIns { 0 };
+    AudioDeviceManager voiceOut, micIn;
+    VoiceOutCallback voiceOutCb { talkback };
+    std::atomic<int> micDevCh { 0 };
+    MicInCallback micInCb { talkback, micDevCh };
+    String talkOutName, micDevName;
+    StringArray micDevices;
     std::atomic<bool> dawLoud { false }, midiPedal { false };
     std::atomic<int> midiNotes { 0 };
     juce::uint32 lastLoudMs = 0;

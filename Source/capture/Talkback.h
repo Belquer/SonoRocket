@@ -1,18 +1,21 @@
 // SonoRocket talkback for the capture app.
 //
-// A microphone on its own input of the audio interface, separate from the
-// master pair. Its voice goes to the listeners at low latency (16 kHz, 10 ms
-// frames, never behind the master's 2 s buffer), and the listeners' voice
-// comes back out of an output pair of the same interface.
+// A microphone separate from the master: another input of the capture device,
+// or any other input device (Windows often splits an interface into one device
+// per input pair, or it can be a USB mic). Its voice goes to the listeners at
+// low latency (16 kHz, 10 ms frames, never behind the master's 2 s buffer), and
+// the listeners' voice comes back out of an output device of its own.
 //
-// Echo: the master is captured on this very interface, sample-aligned with
-// the mic, so it is a perfect reference for the echo canceller (speexdsp):
-// what leaks from the studio speakers into the mic is subtracted. The voice
-// we play out is a reference too, so the listener never hears himself.
+// Echo: the master as captured is the echo canceller's reference (speexdsp):
+// what leaks from the studio speakers into the mic is subtracted. With the mic
+// on the same device as the master the two are sample-aligned; from another
+// device the canceller absorbs the (fixed) offset, and drift is trimmed. While
+// the listener's voice plays, a hands-free mic is ducked so he never hears
+// himself come back.
 //
-// Threads: the audio callback only copies into lock-free FIFOs. Resampling,
-// echo cancelling and networking run on the talkback thread, so the master
-// capture (bit-exact) can never glitch because of talkback.
+// Devices are kept apart on purpose: a talkback setting can never stop the
+// master capture. Audio callbacks only copy into lock-free FIFOs; resampling,
+// echo cancelling and networking run on the talkback thread.
 
 #pragma once
 
@@ -33,17 +36,19 @@ public:
     explicit Talkback (RocketStreamer& s);
     ~Talkback() override;
 
-    // Not real-time (device about to start). Safe while the audio callback is stopped.
-    void prepare (double deviceSampleRate);
+    // Not real-time: call when the corresponding device is about to start.
+    void prepareReference (double sampleRate);   // the capture device (master)
+    void prepareMic (double sampleRate);         // the mic's device (may be the same)
+    void prepareOutput (double sampleRate);      // the talkback output device
+    void stopMic();                              // no mic: stop sending
 
-    // Audio thread. mic may be null (no mic input chosen): then only playback runs.
-    // refL/refR: the master as captured. outVoice: receives the listeners' voice
-    // (numSamples), already at the playback volume.
-    void process (const float* mic, const float* refL, const float* refR,
-                  float* outVoice, int numSamples) noexcept;
+    // Audio threads
+    void captureReference (const float* refL, const float* refR, int numSamples) noexcept;
+    void captureMic (const float* mic, int numSamples) noexcept;
+    void render (float* out, int numSamples) noexcept;
 
     // Any thread
-    void setMicOpen (bool open) noexcept       { micOpen = open; }      // gate: send our voice?
+    void setMicOpen (bool open, bool pushToTalk) noexcept { micOpen = open; ptt = pushToTalk; }
     void setPlaybackGain (float g) noexcept    { playbackGain = g; }
     void setMicGain (float g) noexcept         { micGain = g; }
     float takeMicPeak() noexcept               { return micPeak.exchange (0.0f); }   // after echo cancel
@@ -54,41 +59,52 @@ public:
     static constexpr int kFrame = 160;               // 10 ms at 16 kHz
     static constexpr int kTailMs = 250;              // echo tail the canceller models
 
+    // One audio stream from an audio thread to the worker, resampled to 16 kHz.
+    struct Lane
+    {
+        ~Lane() { release(); }
+        void prepare (int channels, double sampleRate);
+        void release();
+        void push (const float* const* chans, int n, float gain) noexcept;   // audio thread
+        void pull();                                                          // worker: FIFO → pending (16 kHz)
+        int frames16() const { return ch > 0 ? (int) (pending.size() / (size_t) ch) : 0; }
+        void drop16 (int frames);
+
+        int ch = 0;
+        double rate = 48000.0;
+        std::atomic<bool> ready { false };
+        juce::HeapBlock<float> data;
+        std::unique_ptr<juce::AbstractFifo> fifo;
+        SpeexResamplerState_* rs = nullptr;
+        std::vector<float> chunk, out, pending;   // pending: interleaved at 16 kHz
+    };
+
 private:
     void run() override;
     void processCaptured();
     void feedPlayback();
-    void destroyDsp();
 
     RocketStreamer& streamer;
+    Lane ref, mic;   // ref: master L/R; mic: mono
 
-    // audio → worker: interleaved [mic, refL, refR, voiceOut] at the device rate
-    static constexpr int kCapCh = 4;
-    juce::HeapBlock<float> capData;
-    std::unique_ptr<juce::AbstractFifo> capFifo;
-    // worker → audio: mono voice at the device rate
+    // worker → output: mono voice at the output rate
     juce::HeapBlock<float> playData;
     std::unique_ptr<juce::AbstractFifo> playFifo;
-    int fifoFrames = 0;
+    SpeexResamplerState_* up = nullptr;
+    double outRate = 48000.0;
 
-    std::atomic<bool> micOpen { false }, sending { false }, prepared { false };
+    std::atomic<bool> micOpen { false }, ptt { false }, sending { false }, outReady { false };
+    std::atomic<juce::uint32> lastVoiceMs { 0 };
     std::atomic<float> playbackGain { 1.0f }, micGain { 1.0f };
     std::atomic<float> micPeak { 0.0f }, voicePeak { 0.0f };
-    std::atomic<bool> playStarved { true };
 
-    juce::CriticalSection dspLock;   // worker vs prepare()
-    double deviceRate = 48000.0;
+    juce::CriticalSection dspLock;   // worker vs prepare*()
     SpeexEchoState_* echo = nullptr;
     SpeexPreprocessState_* pre = nullptr;
-    SpeexResamplerState_* down = nullptr;   // device → 16 kHz, 4 channels
-    SpeexResamplerState_* up = nullptr;     // 16 kHz → device, mono
 
-    // worker scratch
-    std::vector<float> capChunk, down16, voiceUp;
-    std::vector<float> pend16;              // 16 kHz interleaved 4 ch, waiting for a full frame
-    std::vector<int16_t> jitter;            // incoming voice at 16 kHz
-    bool jitterPlaying = false;
-    float fade = 0.0f;                      // send gate ramp, avoids clicks at open/close
+    std::vector<float> voiceUp;
+    float fade = 0.0f;   // send gate ramp, avoids clicks at open/close
+    float duck = 1.0f;   // hands-free mic ducked while the listener talks
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Talkback)
 };

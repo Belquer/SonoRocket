@@ -21,12 +21,13 @@ TODA VEZ
 Deixe o SonoRocket aberto enquanto ele estiver ouvindo. Para encerrar, feche a janela.
 
 TALKBACK (falar com o dB sem os 2 segundos de atraso)
-1. Ligue um microfone numa entrada livre da placa (ex.: entrada 3).
+1. Ligue um microfone numa entrada livre da placa (ex.: entrada 3) ou use um mic USB.
 2. No SonoRocket, painel "Talkback":
    - Master (Pro Tools): as entradas por onde chega o Pro Tools (ex.: 1-2).
-   - Microfone: a entrada do microfone (ex.: Entrada 3).
-   - Voz do dB sai em: as saídas da placa onde está o seu fone ou caixinha.
-     (Primeiro escolha a saída da placa lá embaixo, em "Output".)
+   - Microfone: a entrada do mic. Se ela não aparece na lista de cima, procure em
+     "Outros dispositivos": o Windows costuma mostrar cada par de entradas da placa
+     como um dispositivo separado (ex.: "Entradas 3-4 (sua placa) · canal 1").
+   - Voz do dB sai em: o fone ou a caixinha onde você quer ouvir o dB.
 3. Pronto:
    - Pro Tools parado: o microfone fica aberto, é só falar.
    - Pro Tools tocando: segure Ctrl+T (funciona de qualquer janela deste PC),

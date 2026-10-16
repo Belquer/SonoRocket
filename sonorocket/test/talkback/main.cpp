@@ -24,9 +24,14 @@ int main (int argc, char** argv)
     for (int i = 0; i < 300 && s.getState() != RocketStreamer::State::Streaming; ++i) std::this_thread::sleep_for (std::chrono::milliseconds (10));
     if (s.getState() != RocketStreamer::State::Streaming) { printf ("not streaming\n"); return 2; }
 
+    // argv[2]: mic offset in ms (simulates the mic on another device, e.g. 30)
+    const int micDelay = (int) (sr * (argc > 2 ? atof (argv[2]) : 0.0) / 1000.0);
     Talkback tb (s);
-    tb.prepare (sr);
-    tb.setMicOpen (true);
+    tb.prepareReference (sr);
+    tb.prepareMic (sr);
+    tb.prepareOutput (sr);
+    tb.setMicOpen (true, true);
+    std::vector<float> micLine ((size_t) micDelay + 1); size_t mlp = 0;
 
     juce::Random rng (7);
     // "music": filtered noise, different L/R, with a slow level wobble
@@ -59,7 +64,8 @@ int main (int argc, char** argv)
                 const float env = (float) std::pow (std::sin (M_PI * std::fmod (t * 4, 1.0)), 2);
                 v = 0.25f * env * (float) (std::sin (ph) + 0.5 * std::sin (3 * ph) + 0.3 * std::sin (5 * ph));
             }
-            mic[i] = e + v;
+            micLine[mlp] = e + v; mlp = (mlp + 1) % micLine.size();
+            mic[i] = micLine[mlp];   // oldest = delayed by micDelay samples
             if (t >= 3 && t < 8) { echoE += e * e; ++echoN; }
             if (t >= 8 && t < 11) { voiceE += v * v; ++voiceN; }
         }
@@ -67,7 +73,9 @@ int main (int argc, char** argv)
         if (! m11 && t >= 11) { printf ("MARK listen %lld\n", nowMs()); fflush (stdout); m11 = true; }
         const float* m[2] = { L.data(), R.data() };
         s.pushAudio (m, 2, bs);   // the master rides the same connection, as in the app
-        tb.process (mic.data(), L.data(), R.data(), out.data(), bs);
+        tb.captureReference (L.data(), R.data(), bs);
+        tb.captureMic (mic.data(), bs);
+        tb.render (out.data(), bs);
         const int phase = t < 8 ? 0 : t < 11 ? 1 : 2;
         for (int i = 0; i < bs; ++i) { outE[phase] += out[i] * out[i]; ++outN[phase]; }
         if (phase == 2) {

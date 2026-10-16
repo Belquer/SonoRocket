@@ -7,6 +7,6 @@ cmake -S "$HERE" -B "$B" -G Ninja -DCMAKE_BUILD_TYPE=Release >/dev/null
 cmake --build "$B" >/dev/null
 "$RELAY" -sender 127.0.0.1:9100 -http 127.0.0.1:8080 -tunnel off -room talk-test > "$B/relay.log" 2>&1 &
 RP=$!; trap 'kill $RP' EXIT; sleep 1
-"$B/talkback_test_artefacts/Release/talkback_test" talk-test | NODE_PATH="$HERE/../../tools/node_modules" node "$HERE/talk-listen.js" talk-test "$B/rec.json" > "$B/log.txt"
+"$B/talkback_test_artefacts/Release/talkback_test" talk-test "${MIC_DELAY_MS:-0}" | NODE_PATH="$HERE/../../tools/node_modules" node "$HERE/talk-listen.js" talk-test "$B/rec.json" > "$B/log.txt"
 cat "$B/log.txt" | grep RESULT
 python3 "$HERE/check.py" "$B/log.txt" "$B/rec.json"
