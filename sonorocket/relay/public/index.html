@@ -97,6 +97,7 @@
   #cPeer { flex: 0 0 auto; }
   #talkBtn { flex: 1 1 auto; width: auto; padding: 10px; font-size: 15px; }
   .talk .mini { height: 4px; }
+  .phones { display: flex; align-items: center; gap: 4px; margin: 0; font-size: 12px; color: var(--dim); flex: 0 0 auto; cursor: pointer; }
   footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; }
 </style>
 </head>
@@ -133,6 +134,7 @@
         </div>
         <div class="line">
           <button class="ghost tiny" id="talkEnable">Ativar microfone</button>
+          <label class="phones" title="De fone, a voz vai limpa, sem cancelamento de eco, supressão de ruído nem controle de ganho do navegador"><input type="checkbox" id="phones"> fone</label>
           <button id="talkBtn" class="hidden">Segure para falar · <kbd>T</kbd></button>
         </div>
         <div class="mini"><i id="micBar"></i></div>
@@ -344,7 +346,14 @@ let talkAvail = false, micStream = null, micNode = null, voiceNode = null, micCt
 let pttKey = false, pttBtn = false, lastLoud = -1e9, voiceSeq = 0, micOpenSent = null, peerPeak = 0, micPeak = 0;
 function talkGain() { const d = +$('talkVol').value; return Math.pow(10, d / 20); }
 
+let micSrc = null;
+function detachMic() {   // never leave a second mic node sending alongside a new one
+  if (micNode) { micNode.port.onmessage = null; try { micNode.disconnect(); } catch {} }
+  if (micSrc) { try { micSrc.disconnect(); } catch {} }
+  micNode = null; micSrc = null;
+}
 async function attachMic() {
+  detachMic();
   let c = ctx, src;
   try { src = ctx.createMediaStreamSource(micStream); }
   catch {   // some browsers can't mix a mic into a context at another rate: give it its own
@@ -353,6 +362,7 @@ async function attachMic() {
     await micCtx.resume();
     c = micCtx; src = micCtx.createMediaStreamSource(micStream);
   }
+  micSrc = src;
   micNode = new AudioWorkletNode(c, 'rocket-mic', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
   const sink = c.createGain(); sink.gain.value = 0;   // keeps the node rendering, outputs nothing
   src.connect(micNode); micNode.connect(sink); sink.connect(c.destination);
@@ -367,14 +377,28 @@ async function attachMic() {
   };
 }
 
+// On speakers the browser must cancel the mix leaking into the mic (that processing is
+// what can sound "robotic"); on headphones the voice goes through clean.
+$('phones').checked = localStorageGet('rocket.phones') === '1';
+function openMic() {
+  const clean = $('phones').checked;
+  return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: !clean, noiseSuppression: !clean, autoGainControl: !clean, channelCount: 1 } });
+}
+$('phones').onchange = async () => {
+  localStorageSet('rocket.phones', $('phones').checked ? '1' : '0');
+  if (!micStream) return;   // applies when the mic is turned on
+  micStream.getTracks().forEach((t) => t.stop());
+  try { micStream = await openMic(); if (ctx) await attachMic(); } catch { micStream = null; }
+};
+
 $('talkEnable').onclick = async () => {
   if (micStream) {   // turn off
-    micStream.getTracks().forEach((t) => t.stop()); micStream = null; micNode = null;
+    micStream.getTracks().forEach((t) => t.stop()); micStream = null; detachMic();
     $('talkEnable').textContent = 'Ativar microfone'; $('talkBtn').classList.add('hidden');
     return;
   }
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
+    micStream = await openMic();
   } catch (err) { $('talkState').textContent = 'sem permissão para o microfone'; return; }
   try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch {}
   $('talkEnable').textContent = 'Desligar microfone'; $('talkBtn').classList.remove('hidden');

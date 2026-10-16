@@ -98,13 +98,16 @@ registerProcessor('rocket-player', RocketPlayer);
 // It never touches the master buffer above. Late voice is dropped, not delayed.
 const VOICE_RATE = 16000;
 
-// The sender's talkback voice → speakers. Short jitter buffer (starts at 40 ms,
-// trimmed back to 50 ms if it ever grows past 200 ms), linear upsampling.
+// The sender's talkback voice → speakers. Adaptive jitter buffer: starts at
+// 80 ms, grows 40 ms on every underrun (up to 300 ms), creeps back 20 ms after
+// 15 s without one; more than 200 ms over target is dropped, not delayed.
+// Fades in after a rebuffer and out on an underrun, so gaps never click.
 class RocketVoice extends AudioWorkletProcessor {
   constructor() {
     super();
     this.q = new Float32Array(VOICE_RATE);   // 1 s ring
     this.r = 0; this.n = 0; this.pos = 0; this.playing = false;
+    this.target = 1280; this.lastUnder = 0; this.fadeIn = 0;
     this.gain = 1; this.peak = 0; this.last = 0;
     this.step = VOICE_RATE / sampleRate;
     this.port.onmessage = (e) => {
@@ -119,17 +122,23 @@ class RocketVoice extends AudioWorkletProcessor {
       if (this.n === cap) { this.r = (this.r + 1) % cap; this.n--; }
       this.q[(this.r + this.n) % cap] = pcm[i] / 32768; this.n++;
     }
-    if (this.n > 3200) { const drop = this.n - 800; this.r = (this.r + drop) % cap; this.n -= drop; this.pos = 0; }
-    if (!this.playing && this.n >= 640) this.playing = true;
+    if (this.lastUnder && currentTime - this.lastUnder > 15 && this.target > 960) { this.target -= 320; this.lastUnder = currentTime; }
+    if (this.n > this.target + 3200) { const drop = this.n - this.target; this.r = (this.r + drop) % cap; this.n -= drop; this.pos = 0; }
+    if (!this.playing && this.n >= this.target) { this.playing = true; this.fadeIn = 0; }
   }
   process(_in, outputs) {
     const out = outputs[0], len = out[0].length, cap = this.q.length;
     let pk = 0;
     if (this.playing) {
       for (let i = 0; i < len; i++) {
-        if (this.n < 2) { this.playing = false; break; }   // underrun: rebuffer
+        if (this.n < 2) {   // underrun: fade the tail we just played, wait longer next time
+          this.playing = false; this.target = Math.min(4800, this.target + 640); this.lastUnder = currentTime;
+          for (let k = Math.max(0, i - 64), j = 0; k < i; k++, j++) for (let o = 0; o < out.length; o++) out[o][k] *= 1 - j / 64;
+          break;
+        }
         const a = this.q[this.r], b = this.q[(this.r + 1) % cap];
-        const s = (a + (b - a) * this.pos) * this.gain;
+        const fi = this.fadeIn < 240 ? this.fadeIn++ / 240 : 1;
+        const s = (a + (b - a) * this.pos) * this.gain * fi;
         for (let o = 0; o < out.length; o++) out[o][i] = s;
         const abs = s < 0 ? -s : s; if (abs > pk) pk = abs;
         this.pos += this.step;

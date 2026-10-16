@@ -9,11 +9,14 @@
 namespace SonoRocket {
 
 namespace {
-    // Incoming voice per listener, at 16 kHz. Start once a little is buffered,
-    // and never let it grow: late voice is dropped, not delayed.
-    constexpr int kStartSamples = 640;     // 40 ms
-    constexpr int kMaxSamples   = 3200;    // 200 ms → trimmed back to kTrimTo
-    constexpr int kTrimTo       = 800;     // 50 ms
+    // Incoming voice per listener, at 16 kHz, with an adaptive jitter buffer:
+    // starts at 80 ms, grows 40 ms on every underrun (up to 300 ms), and creeps
+    // back down 20 ms after 15 s without one. Never more than target + 200 ms
+    // queued: past that, late voice is dropped, not delayed.
+    constexpr int kTargetStart = 1280, kTargetMin = 960, kTargetMax = 4800;   // 80 / 60 / 300 ms
+    constexpr int kTargetUp = 640, kTargetDown = 320;                         // +40 / −20 ms
+    constexpr int kSlack = 3200;                                              // 200 ms over target
+    constexpr int kFadeIn = 80;                                               // 5 ms after a rebuffer
     constexpr double kPlayAheadSeconds = 0.02;
 
     inline int16_t toS16 (float v) noexcept
@@ -22,7 +25,8 @@ namespace {
         return (int16_t) juce::jlimit (-32768.0f, 32767.0f, v);
     }
 
-    struct Source { std::vector<int16_t> q; bool playing = false; juce::uint32 lastMs = 0; };
+    struct Source { std::vector<int16_t> q; bool playing = false; juce::uint32 lastMs = 0;
+                    int target = kTargetStart; juce::uint32 lastUnderrunMs = 0; bool fresh = true; };
     std::map<uint16_t, Source>& sources() { static std::map<uint16_t, Source> s; return s; }   // worker thread only
 }
 
@@ -97,7 +101,7 @@ Talkback::Talkback (RocketStreamer& s) : juce::Thread ("SonoRocket talkback"), s
     speex_echo_ctl (echo, SPEEX_ECHO_SET_SAMPLING_RATE, &rate);
     pre = speex_preprocess_state_init (kFrame, kRate);
     speex_preprocess_ctl (pre, SPEEX_PREPROCESS_SET_ECHO_STATE, echo);
-    int on = 1, off = 0, suppress = -45, suppressActive = -20, noise = -25;
+    int on = 1, off = 0, suppress = -40, suppressActive = -15, noise = -15;   // gentle: no pumping
     speex_preprocess_ctl (pre, SPEEX_PREPROCESS_SET_DENOISE, &on);
     speex_preprocess_ctl (pre, SPEEX_PREPROCESS_SET_NOISE_SUPPRESS, &noise);
     speex_preprocess_ctl (pre, SPEEX_PREPROCESS_SET_AGC, &off);
@@ -186,7 +190,7 @@ void Talkback::render (float* out, int n) noexcept
     juce::FloatVectorOperations::multiply (out, playbackGain.load(), n);
     auto r = juce::FloatVectorOperations::findMinAndMax (out, n);
     const float pk = juce::jmax (std::abs (r.getStart()), std::abs (r.getEnd()));
-    if (pk > 0.003f) lastVoiceMs = juce::Time::getMillisecondCounter();
+    if (pk > 0.05f) lastVoiceMs = juce::Time::getMillisecondCounter();   // real speech, not room noise
     float prev = voicePeak.load();
     while (pk > prev && ! voicePeak.compare_exchange_weak (prev, pk)) {}
 }
@@ -243,12 +247,12 @@ void Talkback::processCaptured()
         const bool open = micOpen.load();
         sending = open;
         if (! open && fade <= 0.0f) continue;
-        const bool listenerTalking = juce::Time::getMillisecondCounter() - lastVoiceMs.load() < 250;
-        const float duckTarget = (listenerTalking && ! ptt.load()) ? 0.1f : 1.0f;
+        const bool listenerTalking = juce::Time::getMillisecondCounter() - lastVoiceMs.load() < 300;
+        const float duckTarget = (listenerTalking && ! ptt.load()) ? 0.25f : 1.0f;   // −12 dB, not a mute
         const float target = open ? 1.0f : 0.0f, step = 1.0f / kFrame;
         for (int k = 0; k < kFrame; ++k) {
             fade = target > fade ? juce::jmin (target, fade + step) : juce::jmax (target, fade - step);
-            duck += (duckTarget - duck) * 0.01f;
+            duck += (duckTarget - duck) * (duckTarget < duck ? 0.004f : 0.0015f);   // ~15 ms down, ~40 ms up
             out[k] = (int16_t) (out[k] * fade * duck);
         }
         streamer.pushVoice (out, kFrame);
@@ -265,9 +269,12 @@ void Talkback::feedPlayback()
         auto& s = srcs[id];
         s.q.insert (s.q.end(), pcm.begin(), pcm.end());
         s.lastMs = now;
-        if ((int) s.q.size() > kMaxSamples)   // fell behind: catch up to real time
-            s.q.erase (s.q.begin(), s.q.end() - kTrimTo);
-        if (! s.playing && (int) s.q.size() >= kStartSamples) s.playing = true;
+        if (s.lastUnderrunMs != 0 && now - s.lastUnderrunMs > 15000 && s.target > kTargetMin) {
+            s.target = juce::jmax (kTargetMin, s.target - kTargetDown); s.lastUnderrunMs = now;
+        }
+        if ((int) s.q.size() > s.target + kSlack)   // fell far behind: catch up to real time
+            s.q.erase (s.q.begin(), s.q.end() - s.target);
+        if (! s.playing && (int) s.q.size() >= s.target) { s.playing = true; s.fresh = true; }
     }
     for (auto it = srcs.begin(); it != srcs.end();)   // listeners that went quiet
         it = (now - it->second.lastMs > 5000 && it->second.q.empty()) ? srcs.erase (it) : std::next (it);
@@ -279,8 +286,19 @@ void Talkback::feedPlayback()
         std::fill (mix, mix + kFrame, 0.0f);
         for (auto& [sid, s] : srcs) {
             if (! s.playing) continue;
-            if ((int) s.q.size() < kFrame) { s.playing = false; continue; }   // underrun: rebuffer
-            for (int k = 0; k < kFrame; ++k) mix[k] += s.q[(size_t) k] / 32768.0f;
+            const int have = juce::jmin (kFrame, (int) s.q.size());
+            if (have < kFrame) {   // underrun: play what's left fading out, wait longer next time
+                for (int k = 0; k < have; ++k) mix[k] += s.q[(size_t) k] / 32768.0f * (1.0f - (float) k / (float) juce::jmax (1, have));
+                s.q.clear(); s.playing = false;
+                if (now - s.lastMs < 1000) { s.target = juce::jmin (kTargetMax, s.target + kTargetUp); s.lastUnderrunMs = now; }
+                any = any || have > 0;
+                continue;
+            }
+            for (int k = 0; k < kFrame; ++k) {
+                const float g = s.fresh && k < kFadeIn ? (float) k / kFadeIn : 1.0f;
+                mix[k] += s.q[(size_t) k] / 32768.0f * g;
+            }
+            s.fresh = false;
             s.q.erase (s.q.begin(), s.q.begin() + kFrame);
             any = true;
         }
