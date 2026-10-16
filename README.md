@@ -25,6 +25,15 @@ The one stage outside our control is the listener's device. If the phone's hardw
 
 Verified in this repo (`sonorocket/test`): the real VST3, loaded in a headless host and fed overs above 0 dBFS, denormals and values below the 24-bit floor in varying block sizes, arrives at the listener with **0 sample mismatches**.
 
+## Talkback
+
+Voice both ways at conversation latency (~150–200 ms across continents), on its own path:
+the master keeps its 2 s buffer and stays bit-exact. In the capture app the talkback mic is
+its own input of the interface, and the master on the same interface is the echo-canceller
+reference, so studio speakers leaking into the mic are subtracted. DAW stopped: mic open;
+DAW rolling: hold **T** (or the talk button, or a MIDI pedal). Details in `sonorocket/PROTOCOL.md`;
+test: `sonorocket/test/talkback/run.sh`.
+
 ## Quick start (Mac, zero config)
 
 1. Download `SonoRocket-mac.zip` (GitHub Actions → mac-app), unzip, open **SonoRocket.app**.

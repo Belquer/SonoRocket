@@ -656,7 +656,8 @@ juce_add_gui_app(SonoRocketCapture
     HARDENED_RUNTIME_ENABLED TRUE
     HARDENED_RUNTIME_OPTIONS "com.apple.security.device.audio-input")
 
-target_sources(SonoRocketCapture PRIVATE Source/capture/CaptureApp.cpp Source/RocketStreamer.cpp)
+add_subdirectory(deps/speexdsp)   # echo canceller + resampler for the talkback
+target_sources(SonoRocketCapture PRIVATE Source/capture/CaptureApp.cpp Source/capture/Talkback.cpp Source/RocketStreamer.cpp)
 target_include_directories(SonoRocketCapture PRIVATE Source)
 target_compile_definitions(SonoRocketCapture PRIVATE
     SONOROCKET_VERSION="${SONOROCKET_VERSION}"
@@ -671,6 +672,7 @@ if (UNIX AND NOT APPLE)
     target_compile_definitions(SonoRocketCapture PRIVATE JUCE_JACK=1)
 endif()
 target_link_libraries(SonoRocketCapture PRIVATE
+    speexdsp_talk
     juce::juce_audio_utils
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags)

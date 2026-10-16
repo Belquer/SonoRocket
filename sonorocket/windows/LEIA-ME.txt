@@ -20,6 +20,20 @@ TODA VEZ
 4. Dê play no Pro Tools. Pronto.
 Deixe o SonoRocket aberto enquanto ele estiver ouvindo. Para encerrar, feche a janela.
 
+TALKBACK (falar com o dB sem os 2 segundos de atraso)
+1. Ligue um microfone numa entrada livre da placa (ex.: entrada 3).
+2. No SonoRocket, painel "Talkback":
+   - Master (Pro Tools): as entradas por onde chega o Pro Tools (ex.: 1-2).
+   - Microfone: a entrada do microfone (ex.: Entrada 3).
+   - Voz do dB sai em: as saídas da placa onde está o seu fone ou caixinha.
+     (Primeiro escolha a saída da placa lá embaixo, em "Output".)
+3. Pronto:
+   - Pro Tools parado: o microfone fica aberto, é só falar.
+   - Pro Tools tocando: segure a tecla T (com a janela do SonoRocket na frente),
+     o botão "Segure para falar" ou um pedal MIDI ligado neste PC.
+   O som das caixas que vaza no microfone é cancelado automaticamente.
+   Pode desligar o áudio do Google Meet.
+
 SE ALGO NÃO FUNCIONAR
 - "sem sinal na entrada": a entrada escolhida não está recebendo som. Confira o cabo
   e se é a entrada certa.

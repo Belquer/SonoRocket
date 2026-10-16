@@ -180,21 +180,104 @@ void RocketStreamer::setLink (const juce::String& l)
     relayLink = l;
 }
 
+void RocketStreamer::setTalkbackEnabled (bool on)
+{
+    if (talkEnabled.exchange (on) == on) return;
+    ++configGeneration;   // the handshake announces talkback: reconnect
+    notify();
+}
+
+void RocketStreamer::pushVoice (const int16_t* pcm, int n)
+{
+    if (n <= 0 || n > 960 || state.load() != State::Streaming || ! talkEnabled.load()) return;
+    juce::MemoryBlock mb ((size_t) (4 + 7 + 2 * n));
+    auto* p = static_cast<uint8_t*> (mb.getData());
+    putU32 (p, (uint32_t) (7 + 2 * n));
+    p[4] = 4;
+    const juce::ScopedLock sl (voiceLock);
+    putU32 (p + 5, voiceSeq++);
+    p[9] = (uint8_t) n; p[10] = (uint8_t) (n >> 8);
+    std::memcpy (p + 11, pcm, (size_t) n * 2);   // little-endian host (checked above)
+    if (voiceOut.size() >= kVoiceQueue) voiceOut.pop_front();
+    voiceOut.push_back (std::move (mb));
+    notify();   // wake the network thread: voice shouldn't wait for the next master block
+}
+
+bool RocketStreamer::popIncomingVoice (std::vector<int16_t>& pcm, uint16_t& id)
+{
+    const juce::ScopedLock sl (voiceLock);
+    if (voiceIn.empty()) return false;
+    id = voiceIn.front().first;
+    pcm.swap (voiceIn.front().second);
+    voiceIn.pop_front();
+    return true;
+}
+
+bool RocketStreamer::sendPendingVoice()
+{
+    for (;;) {
+        juce::MemoryBlock mb;
+        {
+            const juce::ScopedLock sl (voiceLock);
+            if (voiceOut.empty()) return true;
+            mb = std::move (voiceOut.front());
+            voiceOut.pop_front();
+        }
+        if (! sendAll (mb.getData(), (int) mb.getSize())) return false;
+    }
+}
+
+void RocketStreamer::handleRelayLine (const juce::String& line)
+{
+    if (line.startsWith ("LINK ")) setLink (line.substring (5).trim());
+}
+
+void RocketStreamer::handleRelayBinary (const uint8_t* p, size_t n)
+{
+    // type 5: talkback from a listener: [5][id u16][seq u32][n u16][int16 pcm]
+    if (n < 9 || p[0] != 5 || ! talkEnabled.load()) return;
+    const uint16_t id = (uint16_t) (p[1] | (p[2] << 8));
+    const int count = p[7] | (p[8] << 8);
+    if (count <= 0 || count > 960 || n != (size_t) (9 + 2 * count)) return;
+    std::vector<int16_t> pcm ((size_t) count);
+    std::memcpy (pcm.data(), p + 9, (size_t) count * 2);
+    const juce::ScopedLock sl (voiceLock);
+    if (voiceIn.size() >= kVoiceQueue) voiceIn.pop_front();
+    voiceIn.emplace_back (id, std::move (pcm));
+}
+
 void RocketStreamer::pollRelayMessages()
 {
-    // The relay may push "LINK <url>\n" when its public tunnel comes up or changes.
+    // From the relay: text lines ("LINK <url>\n"), and with talkback, binary
+    // frames marked by a leading 0x00 byte: 0x00, u32 len, payload.
     while (socket && socket->waitUntilReady (true, 0) == 1) {
-        char buf[512];
+        uint8_t buf[4096];
         const int n = socket->read (buf, (int) sizeof (buf), false);
         if (n <= 0) { disconnect ("connection lost", State::Error); return; }
-        relayLineBuf += juce::String::fromUTF8 (buf, n);
-        int nl;
-        while ((nl = relayLineBuf.indexOfChar ('\n')) >= 0) {
-            const auto line = relayLineBuf.substring (0, nl).trim();
-            relayLineBuf = relayLineBuf.substring (nl + 1);
-            if (line.startsWith ("LINK ")) setLink (line.substring (5).trim());
+        rx.insert (rx.end(), buf, buf + n);
+
+        size_t pos = 0;
+        while (pos < rx.size()) {
+            if (rx[pos] == 0) {
+                if (rx.size() - pos < 5) break;
+                const uint32_t len = (uint32_t) rx[pos + 1] | ((uint32_t) rx[pos + 2] << 8)
+                                   | ((uint32_t) rx[pos + 3] << 16) | ((uint32_t) rx[pos + 4] << 24);
+                if (len > 65536) { rx.clear(); pos = 0; break; }   // garbage: resync
+                if (rx.size() - pos < 5 + (size_t) len) break;
+                handleRelayBinary (rx.data() + pos + 5, len);
+                pos += 5 + len;
+            } else {
+                size_t nl = pos;
+                while (nl < rx.size() && rx[nl] != '\n') ++nl;
+                if (nl == rx.size()) {
+                    if (nl - pos > 8192) { rx.clear(); pos = 0; }
+                    break;
+                }
+                handleRelayLine (juce::String::fromUTF8 ((const char*) rx.data() + pos, (int) (nl - pos)).trim());
+                pos = nl + 1;
+            }
         }
-        if (relayLineBuf.length() > 8192) relayLineBuf.clear();
+        if (pos > 0) rx.erase (rx.begin(), rx.begin() + (std::ptrdiff_t) juce::jmin (pos, rx.size()));
     }
 }
 
@@ -264,6 +347,7 @@ bool RocketStreamer::connectAndHandshake()
     obj->setProperty ("ch", channels.load());
     obj->setProperty ("fmt", "f32");
     obj->setProperty ("app", "SonoRocket");
+    if (talkEnabled.load()) obj->setProperty ("talk", 1);
     const juce::String hs = juce::JSON::toString (juce::var (obj), true) + "\n";
     sentFormatGeneration = formatGeneration.load();
 
@@ -293,7 +377,11 @@ bool RocketStreamer::connectAndHandshake()
         const auto js = juce::JSON::parse (reply.fromFirstOccurrenceOf ("OK", false, false).trim());
         setLink (js.getProperty ("link", juce::var()).toString());
     }
-    relayLineBuf.clear();
+    rx.clear();
+    {
+        const juce::ScopedLock sl (voiceLock);
+        voiceOut.clear(); voiceIn.clear();
+    }
 
     // Start clean: nothing queued from before this session.
     fifo->finishedRead (fifo->getNumReady());
@@ -354,8 +442,9 @@ void RocketStreamer::run()
         const int blockSamples = kBlockFrames * ch;
         block.resize ((size_t) blockSamples);
 
-        bool ok = true;
+        bool ok = sendPendingVoice();
         while (ok && fifo->getNumReady() >= blockSamples && ! threadShouldExit()) {
+            if (! sendPendingVoice()) { ok = false; break; }   // talkback never waits behind the master
             int s1, n1, s2, n2;
             fifo->prepareToRead (blockSamples, s1, n1, s2, n2);
             std::memcpy (block.data(), fifoData.get() + s1, sizeof (float) * (size_t) n1);

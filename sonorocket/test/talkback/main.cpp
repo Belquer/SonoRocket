@@ -1,0 +1,87 @@
+// Talkback test, against a real relay (see run.sh). Drives Talkback like the
+// capture app's audio callback, in real time, 48 kHz, 480-sample blocks:
+//   0–8 s   mic = room echo of the master only, mic forced open  → echo must be cancelled
+//   8–11 s  mic = echo + "voice"                                  → voice must pass
+//   11–14 s listener sends a tone (talk-listen.js)                → must come out of outVoice
+// Prints phase marks (epoch ms) and what came out, for check.py.
+#include "capture/Talkback.h"
+#include <cmath>
+#include <cstdio>
+#include <thread>
+#include <chrono>
+
+using namespace SonoRocket;
+static long long nowMs() { return std::chrono::duration_cast<std::chrono::milliseconds> (std::chrono::system_clock::now().time_since_epoch()).count(); }
+
+int main (int argc, char** argv)
+{
+    const juce::String room = argc > 1 ? argv[1] : "talk-test";
+    const double sr = 48000.0; const int bs = 480;
+    RocketStreamer s;
+    s.prepare (sr, 2);
+    s.setTalkbackEnabled (true);
+    RocketStreamer::Config c; c.room = room; c.enabled = true; s.setConfig (c);
+    for (int i = 0; i < 300 && s.getState() != RocketStreamer::State::Streaming; ++i) std::this_thread::sleep_for (std::chrono::milliseconds (10));
+    if (s.getState() != RocketStreamer::State::Streaming) { printf ("not streaming\n"); return 2; }
+
+    Talkback tb (s);
+    tb.prepare (sr);
+    tb.setMicOpen (true);
+
+    juce::Random rng (7);
+    // "music": filtered noise, different L/R, with a slow level wobble
+    float lpL = 0, lpR = 0;
+    // room: echo = sum of delayed, attenuated taps of L and R (speakers → mic)
+    const int histN = 8192; std::vector<float> hL (histN), hR (histN); int hp = 0;
+    struct Tap { int d; float gl, gr; };
+    const Tap taps[] = { {240, 0.35f, 0.20f}, {310, 0.15f, 0.30f}, {900, 0.08f, 0.06f}, {1900, 0.05f, 0.05f}, {3300, 0.03f, 0.02f} };
+
+    std::vector<float> L (bs), R (bs), mic (bs), out (bs);
+    double ph = 0, t = 0;
+    double echoE = 0, echoN = 0, voiceE = 0, voiceN = 0, outE[3] = {0,0,0}; long long outN[3] = {0,0,0};
+    long long t0 = nowMs();
+    printf ("MARK start %lld\n", t0);
+    bool m8 = false, m11 = false;
+    auto next = std::chrono::steady_clock::now();
+    for (int b = 0; t < 14.0; ++b) {
+        for (int i = 0; i < bs; ++i, t += 1.0 / sr) {
+            const float wob = 0.6f + 0.4f * (float) std::sin (2 * M_PI * 0.3 * t);
+            lpL += 0.15f * ((rng.nextFloat() * 2 - 1) - lpL);
+            lpR += 0.15f * ((rng.nextFloat() * 2 - 1) - lpR);
+            L[i] = 0.9f * wob * lpL; R[i] = 0.9f * wob * lpR;
+            hL[(size_t) hp] = L[i]; hR[(size_t) hp] = R[i];
+            float e = 0;
+            for (auto& tp : taps) { const int k = (hp - tp.d + histN) % histN; e += tp.gl * hL[(size_t) k] + tp.gr * hR[(size_t) k]; }
+            hp = (hp + 1) % histN;
+            float v = 0;
+            if (t >= 8.0 && t < 11.0) {   // "voice": 180 Hz buzz with formant-ish harmonics, syllable envelope
+                ph += 2 * M_PI * 180 / sr;
+                const float env = (float) std::pow (std::sin (M_PI * std::fmod (t * 4, 1.0)), 2);
+                v = 0.25f * env * (float) (std::sin (ph) + 0.5 * std::sin (3 * ph) + 0.3 * std::sin (5 * ph));
+            }
+            mic[i] = e + v;
+            if (t >= 3 && t < 8) { echoE += e * e; ++echoN; }
+            if (t >= 8 && t < 11) { voiceE += v * v; ++voiceN; }
+        }
+        if (! m8 && t >= 8) { printf ("MARK voice %lld\n", nowMs()); m8 = true; }
+        if (! m11 && t >= 11) { printf ("MARK listen %lld\n", nowMs()); fflush (stdout); m11 = true; }
+        const float* m[2] = { L.data(), R.data() };
+        s.pushAudio (m, 2, bs);   // the master rides the same connection, as in the app
+        tb.process (mic.data(), L.data(), R.data(), out.data(), bs);
+        const int phase = t < 8 ? 0 : t < 11 ? 1 : 2;
+        for (int i = 0; i < bs; ++i) { outE[phase] += out[i] * out[i]; ++outN[phase]; }
+        if (phase == 2) {
+            static bool first = true;
+            float pk = 0; for (int i = 0; i < bs; ++i) pk = std::max (pk, std::abs (out[i]));
+            if (first && pk > 0.05f) { printf ("MARK heard %lld\n", nowMs()); first = false; }
+        }
+        next += std::chrono::microseconds ((long long) (1e6 * bs / sr));
+        std::this_thread::sleep_until (next);
+    }
+    auto db = [] (double e, double n) { return n > 0 && e > 0 ? 10 * std::log10 (e / n) : -200.0; };
+    printf ("RESULT echo_in_dB %.1f\n", db (echoE, echoN));
+    printf ("RESULT voice_in_dB %.1f\n", db (voiceE, voiceN));
+    printf ("RESULT out_phase2_dB %.1f\n", db (outE[2], (double) outN[2]));
+    printf ("RESULT dropped %lld\n", (long long) s.getFramesDropped());
+    return 0;
+}

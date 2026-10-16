@@ -57,3 +57,22 @@ listener's buffer fills immediately.
 Pro Tools (and every modern DAW) mixes in floating point. Sending float32
 means even overs above 0 dBFS and anything below the 24-bit floor arrive
 intact. Cost: 48 kHz stereo is 3.1 Mbit/s, 96 kHz is 6.1 Mbit/s.
+
+## Talkback (voice both ways, low latency)
+
+Separate from the master: 16 kHz mono int16 LE, ~10 ms frames (160 samples, max 960).
+Voice never enters the backlog, never waits behind master blocks (both relay and
+sender send it first) and queues hold at most ~160 ms: late voice is dropped, not delayed.
+
+* Handshake: the sender adds `"talk":1`. Listeners are told in
+  `{"type":"sender","online":true,"talk":true}`.
+* Sender → relay, payload type 4: `[4][seq u32][n u16][n × int16]`. Relayed to every
+  listener as a binary WebSocket message, unchanged.
+* Listener → relay, binary WebSocket message type 5: `[5][seq u32][n u16][n × int16]`.
+* Relay → sender: binary frames are marked with a leading `0x00` byte (text lines never
+  contain one): `0x00, len u32, payload`, payload `[5][listener id u16][seq u32][n u16][n × int16]`.
+
+Gate (both sides): with the DAW stopped (master below −60 dBFS for 0.7 s) the mic is open;
+while it plays, the mic only opens while T (or the talk button, or a MIDI pedal on the
+capture app) is held. The capture app cancels the studio speakers' echo from the
+talkback mic using the master it captures as the reference (speexdsp, 250 ms tail).

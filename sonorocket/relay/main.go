@@ -69,9 +69,43 @@ type format struct {
 }
 
 type listener struct {
-	conn *websocket.Conn
-	out  chan wsMsg
-	once sync.Once
+	conn  *websocket.Conn
+	out   chan wsMsg  // master blocks + JSON, in order
+	voice chan []byte // talkback from the sender: tiny, written ahead of the master queue
+	id    uint16
+	once  sync.Once
+}
+
+// Talkback voice (PROTOCOL.md, "Talkback"): 16 kHz mono int16, ~10 ms frames.
+// Voice never enters the backlog and never waits behind master blocks.
+const (
+	voiceRate      = 16000
+	maxVoiceFrames = 960 // 60 ms
+	voiceQueue     = 16  // ~160 ms; older frames are dropped, never delayed
+)
+
+func validVoice(p []byte) bool {
+	if len(p) < 7 {
+		return false
+	}
+	n := int(binary.LittleEndian.Uint16(p[5:7]))
+	return n > 0 && n <= maxVoiceFrames && len(p) == 7+2*n
+}
+
+// pushLatest queues v, dropping the oldest entry instead of blocking when full:
+// for talkback, late is worse than missing.
+func pushLatest(ch chan []byte, v []byte) {
+	for {
+		select {
+		case ch <- v:
+			return
+		default:
+			select {
+			case <-ch:
+			default:
+			}
+		}
+	}
 }
 
 type wsMsg struct {
@@ -87,6 +121,8 @@ type room struct {
 	format        *format
 	sender        net.Conn
 	senderLink    chan string // pushes link updates to the connected sender
+	senderVoice   chan []byte // listener talkback → sender (nil if the sender has no talkback)
+	nextID        uint16
 	listeners     map[*listener]bool
 	backlog       [][]byte
 	backlogFrames int
@@ -307,6 +343,7 @@ type handshake struct {
 	SR   int    `json:"sr"`
 	CH   int    `json:"ch"`
 	Fmt  string `json:"fmt"`
+	Talk int    `json:"talk"` // 1: sender plays and sends talkback voice
 }
 
 func validFormat(f format) bool {
@@ -353,14 +390,18 @@ func handleSender(c net.Conn) {
 
 	r := getRoom(name)
 	linkCh := make(chan string, 4)
+	var voiceCh chan []byte
+	if hs.Talk == 1 {
+		voiceCh = make(chan []byte, voiceQueue)
+	}
 	r.mu.Lock()
 	if r.sender != nil {
 		r.sender.Close() // newest sender wins (reconnects)
 	}
-	r.sender, r.senderLink = c, linkCh
+	r.sender, r.senderLink, r.senderVoice = c, linkCh, voiceCh
 	r.format, r.backlog, r.backlogFrames = &f, nil, 0
 	r.sendJSON(map[string]any{"type": "format", "sr": f.SR, "ch": f.CH, "fmt": f.Fmt})
-	r.sendJSON(map[string]any{"type": "sender", "online": true})
+	r.sendJSON(map[string]any{"type": "sender", "online": true, "talk": voiceCh != nil})
 	r.mu.Unlock()
 	writeStatus()
 
@@ -371,11 +412,30 @@ func handleSender(c net.Conn) {
 	log.Printf("[%s] sender connected from %s (%d Hz, %d ch)", name, peer, f.SR, f.CH)
 
 	// later link changes (tunnel came up / restarted) go to the plugin as "LINK <url>\n"
+	// One writer for everything going back to the sender. Talkback goes first.
+	// Binary frames are marked with a 0x00 byte (text lines never contain one):
+	// 0x00, u32 len, payload.
 	quit := make(chan struct{})
 	go func() {
+		var hdr [5]byte
+		writeVoice := func(v []byte) {
+			binary.LittleEndian.PutUint32(hdr[1:], uint32(len(v)))
+			_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			c.Write(hdr[:])
+			c.Write(v)
+		}
 		for {
 			select {
+			case v := <-voiceCh: // nil channel when there is no talkback: never ready
+				writeVoice(v)
+				continue
+			default:
+			}
+			select {
+			case v := <-voiceCh:
+				writeVoice(v)
 			case l := <-linkCh:
+				_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
 				fmt.Fprintf(c, "LINK %s\n", l)
 			case <-quit:
 				return
@@ -387,8 +447,8 @@ func handleSender(c net.Conn) {
 		close(quit)
 		r.mu.Lock()
 		if r.sender == c {
-			r.sender, r.senderLink = nil, nil
-			r.sendJSON(map[string]any{"type": "sender", "online": false})
+			r.sender, r.senderLink, r.senderVoice = nil, nil, nil
+			r.sendJSON(map[string]any{"type": "sender", "online": false, "talk": false})
 		}
 		r.mu.Unlock()
 		writeStatus()
@@ -446,6 +506,15 @@ func handleSender(c net.Conn) {
 			log.Printf("[%s] format %d Hz, %d ch", name, nf.SR, nf.CH)
 			writeStatus()
 		case 3: // keepalive
+		case 4: // talkback voice from the sender → every listener, live only
+			if !validVoice(p) {
+				continue
+			}
+			r.mu.Lock()
+			for l := range r.listeners {
+				pushLatest(l.voice, p)
+			}
+			r.mu.Unlock()
 		}
 	}
 }
@@ -469,11 +538,13 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r := getRoom(name)
-	l := &listener{conn: conn, out: make(chan wsMsg, maxQueuedMessages)}
+	l := &listener{conn: conn, out: make(chan wsMsg, maxQueuedMessages), voice: make(chan []byte, voiceQueue)}
 
 	r.mu.Lock()
+	r.nextID++
+	l.id = r.nextID
 	r.listeners[l] = true
-	hello, _ := json.Marshal(map[string]any{"type": "sender", "online": r.sender != nil})
+	hello, _ := json.Marshal(map[string]any{"type": "sender", "online": r.sender != nil, "talk": r.senderVoice != nil})
 	l.out <- wsMsg{false, hello}
 	if r.format != nil {
 		fm, _ := json.Marshal(map[string]any{"type": "format", "sr": r.format.SR, "ch": r.format.CH, "fmt": r.format.Fmt})
@@ -490,10 +561,25 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 	log.Printf("[%s] listener joined (%d)", name, count)
 	writeStatus()
 
-	// reader: just to notice the close
+	// reader: talkback from this listener (binary type 5) and noticing the close
+	conn.SetReadLimit(64 << 10)
 	go func() {
 		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
+			t, p, err := conn.ReadMessage()
+			if err == nil && t == websocket.BinaryMessage && len(p) > 0 && p[0] == 5 && validVoice(p) {
+				// to the sender: [5][listener id u16][seq u32][n u16][pcm]
+				v := make([]byte, len(p)+2)
+				v[0] = 5
+				binary.LittleEndian.PutUint16(v[1:3], l.id)
+				copy(v[3:], p[1:])
+				r.mu.Lock()
+				if r.senderVoice != nil {
+					pushLatest(r.senderVoice, v)
+				}
+				r.mu.Unlock()
+				continue
+			}
+			if err != nil {
 				r.mu.Lock()
 				if r.listeners[l] {
 					delete(r.listeners, l)
@@ -504,16 +590,38 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 	}()
-	for m := range l.out {
-		t := websocket.TextMessage
-		if m.binary {
-			t = websocket.BinaryMessage
-		}
+	write := func(t int, b []byte) bool {
 		_ = conn.SetWriteDeadline(time.Now().Add(20 * time.Second))
-		if err := conn.WriteMessage(t, m.data); err != nil {
-			break
+		return conn.WriteMessage(t, b) == nil
+	}
+	for {
+		select { // talkback first, always
+		case v := <-l.voice:
+			if !write(websocket.BinaryMessage, v) {
+				goto done
+			}
+			continue
+		default:
+		}
+		select {
+		case v := <-l.voice:
+			if !write(websocket.BinaryMessage, v) {
+				goto done
+			}
+		case m, ok := <-l.out:
+			if !ok {
+				goto done
+			}
+			t := websocket.TextMessage
+			if m.binary {
+				t = websocket.BinaryMessage
+			}
+			if !write(t, m.data) {
+				goto done
+			}
 		}
 	}
+done:
 	conn.Close()
 	r.mu.Lock()
 	delete(r.listeners, l)

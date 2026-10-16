@@ -11,6 +11,8 @@
 
 #include <juce_core/juce_core.h>
 #include <atomic>
+#include <deque>
+#include <vector>
 
 namespace SonoRocket {
 
@@ -51,6 +53,17 @@ public:
     double getFifoSeconds() const noexcept;
     juce::String getListenerLink() const;    // link reported by the relay (empty until known)
 
+    // ---- Talkback (PROTOCOL.md, "Talkback"): 16 kHz mono int16, ~10 ms frames.
+    // Voice rides the same connection but is always sent ahead of master blocks.
+    // Enabling it changes the handshake, so it reconnects.
+    void setTalkbackEnabled (bool on);
+    bool isTalkbackEnabled() const noexcept   { return talkEnabled.load(); }
+    // Any non-audio thread. Drops the oldest frame rather than ever delaying.
+    void pushVoice (const int16_t* pcm, int numSamples);
+    // Any non-audio thread. Voice from a listener; false when nothing is waiting.
+    bool popIncomingVoice (std::vector<int16_t>& pcm, uint16_t& listenerId);
+    static constexpr int kVoiceRate = 16000;
+
     static constexpr int kBlockFrames  = 1024;
     static constexpr double kFifoSeconds = 20.0;
 
@@ -64,6 +77,9 @@ private:
     bool sendFormatChange();
     void disconnect (const juce::String& why, State newState);
     void pollRelayMessages();
+    void handleRelayLine (const juce::String& line);
+    void handleRelayBinary (const uint8_t* p, size_t n);
+    bool sendPendingVoice();
     void setLink (const juce::String& l);
 
     mutable juce::CriticalSection configLock;
@@ -88,7 +104,14 @@ private:
     void interruptSocket();
     std::atomic<State> state { State::Off };
     juce::String lastError, relayLink;
-    juce::String relayLineBuf;
+    std::vector<uint8_t> rx;   // bytes from the relay: text lines, or 0x00 + u32 len + payload
+
+    std::atomic<bool> talkEnabled { false };
+    juce::CriticalSection voiceLock;
+    std::deque<juce::MemoryBlock> voiceOut;                                    // framed, ready to send
+    std::deque<std::pair<uint16_t, std::vector<int16_t>>> voiceIn;
+    uint32_t voiceSeq = 0;
+    static constexpr size_t kVoiceQueue = 16;   // ~160 ms
     mutable juce::CriticalSection errorLock;
 
     uint32_t seq = 0;

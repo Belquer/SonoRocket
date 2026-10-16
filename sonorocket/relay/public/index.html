@@ -52,6 +52,16 @@
   .sig { font-family: var(--mono); color: var(--text); letter-spacing: 0.02em; }
   .sig b { color: var(--hot); font-weight: 700; }
   .vol .row { align-items: baseline; }
+  .talk { display: grid; gap: 10px; }
+  .talk .row { align-items: center; }
+  .tstate { font: 700 16px var(--mono); }
+  .tstate.open { color: var(--ok); } .tstate.wait { color: var(--warn); }
+  #talkBtn { background: var(--panel); color: var(--text); border: 1px solid var(--line); user-select: none; -webkit-user-select: none;
+             touch-action: none; -webkit-touch-callout: none; }
+  #talkBtn.on { background: var(--ok); color: var(--bg); border-color: var(--ok); }
+  .mini { height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+  .mini i { display: block; height: 100%; width: 0; background: var(--ok); }
+  kbd { font: 12px var(--mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; }
   .vol button.ghost { flex: 0 0 auto; width: auto; padding: 6px 12px; font-size: 13px; }
 </style>
 </head>
@@ -68,6 +78,21 @@
   </section>
 
   <button id="playBtn">Ouvir</button>
+
+  <section class="panel talk hidden" id="talkPanel">
+    <div class="row">
+      <div><div class="sub">talkback · sem os 2 s de atraso</div><div class="tstate" id="talkState">microfone desligado</div></div>
+      <span class="chip" id="cPeer" style="flex:0 0 auto">estúdio: quieto</span>
+    </div>
+    <div class="mini"><i id="micBar"></i></div>
+    <button class="ghost" id="talkEnable">Ativar microfone</button>
+    <button id="talkBtn" class="hidden">Segure para falar (<kbd>T</kbd>)</button>
+    <div>
+      <label for="talkVol">volume da voz do estúdio: <span id="talkVolLabel">0.0 dB</span></label>
+      <input type="range" id="talkVol" min="-40" max="12" step="0.5" value="0">
+    </div>
+    <div class="sub">DAW parada: o microfone fica aberto. DAW tocando: segure <kbd>T</kbd> ou o botão para falar.</div>
+  </section>
 
   <section class="panel chips" id="chips">
     <span class="chip" id="cSender">emissor: —</span>
@@ -140,7 +165,7 @@ function chip(id, text, cls) { const el = $(id); el.textContent = text; el.class
 
 async function buildAudio(sr, ch) {
   if (ctx && ctx.sampleRate === sr && node && node.__ch === ch) return;
-  if (ctx) { try { await ctx.close(); } catch {} ctx = null; node = null; }
+  if (ctx) { try { await ctx.close(); } catch {} ctx = null; node = null; voiceNode = null; micNode = null; }
   try { ctx = new AudioContext({ sampleRate: sr, latencyHint: 'playback' }); }
   catch { ctx = new AudioContext({ latencyHint: 'playback' }); }
   await ctx.audioWorklet.addModule('rocket-worklet.js');
@@ -152,6 +177,12 @@ async function buildAudio(sr, ch) {
   node.connect(ctx.destination);
   node.port.postMessage({ type: 'target', seconds: +$('bufTarget').value });
   node.port.postMessage({ type: 'gain', value: volGain() });
+  voiceNode = new AudioWorkletNode(ctx, 'rocket-voice', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+  voiceNode.connect(ctx.destination);
+  voiceNode.port.postMessage({ type: 'gain', value: talkGain() });
+  voiceNode.port.onmessage = (e) => { peerPeak = Math.max(peerPeak * 0.8, e.data.peak); };
+  micNode = null;
+  if (micStream) await attachMic();
   node.port.onmessage = (e) => showStatus(e.data);
   const native = ctx.sampleRate === sr;
   chip('cRate', native ? `saída: ${ctx.sampleRate} Hz nativo` : `saída: ${ctx.sampleRate} Hz (browser reamostra)`, native ? 'ok' : 'warn');
@@ -166,7 +197,11 @@ function connect() {
   ws.onmessage = async (e) => {
     if (typeof e.data === 'string') {
       const m = JSON.parse(e.data);
-      if (m.type === 'sender') chip('cSender', m.online ? 'emissor: ao vivo' : 'emissor: offline', m.online ? 'ok' : 'warn');
+      if (m.type === 'sender') {
+        chip('cSender', m.online ? 'emissor: ao vivo' : 'emissor: offline', m.online ? 'ok' : 'warn');
+        talkAvail = !!(m.online && m.talk);
+        $('talkPanel').classList.toggle('hidden', !talkAvail);
+      }
       if (m.type === 'format') {
         format = m; lastSeq = null;
         chip('cFormat', `formato: ${m.sr} Hz · ${m.ch}ch · float32`, 'ok');
@@ -177,6 +212,14 @@ function connect() {
     }
     if (!node || !format) return;
     const dv = new DataView(e.data);
+    if (dv.getUint8(0) === 4) {   // talkback from the studio: straight to the voice player
+      const n = dv.getUint16(5, true);
+      if (voiceNode && e.data.byteLength === 7 + 2 * n) {
+        const pcm = new Int16Array(e.data.slice(7));
+        voiceNode.port.postMessage({ type: 'voice', pcm }, [pcm.buffer]);
+      }
+      return;
+    }
     if (dv.getUint8(0) !== 1) return;
     const seq = dv.getUint32(1, true), n = dv.getUint32(5, true), crc = dv.getUint32(9, true);
     const bytes = new Uint8Array(e.data, 13);
@@ -184,6 +227,8 @@ function connect() {
     if (lastSeq !== null && seq !== ((lastSeq + 1) >>> 0)) gaps++;
     lastSeq = seq; blocksOk++;
     const pcm = new Float32Array(e.data.slice(13)); // aligned copy, transferred to the worklet
+    // is the DAW rolling? judged on arrival, ahead of the playback buffer
+    for (let i = 0; i < pcm.length; i += 3) { const a = pcm[i]; if (a > LOUD || a < -LOUD) { lastLoud = performance.now(); break; } }
     node.port.postMessage({ type: 'data', pcm }, [pcm.buffer]);
   };
   ws.onclose = () => {
@@ -248,6 +293,84 @@ function applyVol(save) {
 $('vol').oninput = () => applyVol(true);
 $('volReset').onclick = () => { $('vol').value = 0; applyVol(true); };
 $('vol').ondblclick = () => { $('vol').value = 0; applyVol(true); };
+
+// ---------- talkback ----------
+// Voice both ways at 16 kHz in 10 ms frames, outside the 2 s master buffer.
+// DAW stopped (master below −60 dBFS for 0.7 s): mic open. DAW rolling: hold T or the button.
+const LOUD = 0.001, HOLD_MS = 700;
+let talkAvail = false, micStream = null, micNode = null, voiceNode = null, micCtx = null;
+let pttKey = false, pttBtn = false, lastLoud = -1e9, voiceSeq = 0, micOpenSent = null, peerPeak = 0, micPeak = 0;
+function talkGain() { const d = +$('talkVol').value; return Math.pow(10, d / 20); }
+
+async function attachMic() {
+  let c = ctx, src;
+  try { src = ctx.createMediaStreamSource(micStream); }
+  catch {   // some browsers can't mix a mic into a context at another rate: give it its own
+    micCtx = micCtx || new AudioContext();
+    await micCtx.audioWorklet.addModule('rocket-worklet.js');
+    await micCtx.resume();
+    c = micCtx; src = micCtx.createMediaStreamSource(micStream);
+  }
+  micNode = new AudioWorkletNode(c, 'rocket-mic', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+  const sink = c.createGain(); sink.gain.value = 0;   // keeps the node rendering, outputs nothing
+  src.connect(micNode); micNode.connect(sink); sink.connect(c.destination);
+  micOpenSent = null;
+  micNode.port.onmessage = (e) => {
+    if (e.data.peak !== undefined) { micPeak = Math.max(micPeak * 0.7, e.data.peak); return; }
+    if (!ws || ws.readyState !== 1) return;
+    const pcm = e.data.pcm, buf = new ArrayBuffer(7 + pcm.length * 2), dv = new DataView(buf);
+    dv.setUint8(0, 5); dv.setUint32(1, voiceSeq++ >>> 0, true); dv.setUint16(5, pcm.length, true);
+    new Uint8Array(buf, 7).set(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.length * 2));   // offset 7 is odd: copy bytes
+    ws.send(buf);
+  };
+}
+
+$('talkEnable').onclick = async () => {
+  if (micStream) {   // turn off
+    micStream.getTracks().forEach((t) => t.stop()); micStream = null; micNode = null;
+    $('talkEnable').textContent = 'Ativar microfone'; $('talkBtn').classList.add('hidden');
+    return;
+  }
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
+  } catch (err) { $('talkState').textContent = 'sem permissão para o microfone'; return; }
+  try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch {}
+  $('talkEnable').textContent = 'Desligar microfone'; $('talkBtn').classList.remove('hidden');
+  if (!ws) connect();
+  if (ctx) { await ctx.resume(); await attachMic(); }
+};
+
+$('talkVol').value = +localStorageGet('rocket.talkVol') || 0;
+const showTalkVol = () => { const d = +$('talkVol').value; $('talkVolLabel').textContent = (d > 0 ? '+' : '') + d.toFixed(1) + ' dB'; };
+showTalkVol();
+$('talkVol').oninput = () => { showTalkVol(); localStorageSet('rocket.talkVol', +$('talkVol').value); voiceNode && voiceNode.port.postMessage({ type: 'gain', value: talkGain() }); };
+
+const tb = $('talkBtn');
+tb.addEventListener('pointerdown', (e) => { pttBtn = true; try { tb.setPointerCapture(e.pointerId); } catch {} e.preventDefault(); });
+['pointerup', 'pointercancel', 'lostpointercapture'].forEach((ev) => tb.addEventListener(ev, () => { pttBtn = false; }));
+tb.addEventListener('contextmenu', (e) => e.preventDefault());
+const typing = (e) => /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && e.target.type !== 'range';
+addEventListener('keydown', (e) => { if (e.code === 'KeyT' && !typing(e)) { e.preventDefault(); pttKey = true; } });
+addEventListener('keyup', (e) => { if (e.code === 'KeyT') pttKey = false; });
+addEventListener('blur', () => { pttKey = false; pttBtn = false; });
+
+setInterval(() => {
+  const playing = performance.now() - lastLoud < HOLD_MS;
+  const ptt = pttKey || pttBtn;
+  const ready = !!(micNode && talkAvail && ws && ws.readyState === 1);
+  const open = ready && (!playing || ptt);
+  if (micNode && open !== micOpenSent) { micNode.port.postMessage({ type: 'open', value: open }); micOpenSent = open; }
+  const st = $('talkState');
+  if (!micStream) { st.textContent = 'microfone desligado'; st.className = 'tstate'; }
+  else if (!ready) { st.textContent = 'conectando…'; st.className = 'tstate'; }
+  else if (open) { st.textContent = playing ? '● falando' : '● mic aberto · DAW parada'; st.className = 'tstate open'; }
+  else { st.textContent = 'DAW tocando · segure T'; st.className = 'tstate wait'; }
+  tb.classList.toggle('on', open && ptt);
+  $('micBar').style.width = (open ? Math.min(100, Math.max(0, (60 + 20 * Math.log10(micPeak || 1e-9)) / 60 * 100)) : 0) + '%';
+  const talking = peerPeak > 0.003;
+  chip('cPeer', talking ? 'estúdio: falando' : 'estúdio: quieto', talking ? 'ok' : '');
+  peerPeak *= 0.9;
+}, 33);
 
 $('resyncBtn').onclick = () => { node && node.port.postMessage({ type: 'flush' }); };
 $('copyBtn').onclick = async () => {
