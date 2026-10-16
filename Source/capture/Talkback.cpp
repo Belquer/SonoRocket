@@ -259,8 +259,9 @@ void Talkback::processCaptured()
         const bool open = micOpen.load();
         sending = open;
         if (! open && fade <= 0.0f) continue;
-        const bool listenerTalking = juce::Time::getMillisecondCounter() - lastVoiceMs.load() < 300;
-        const float duckTarget = (listenerTalking && ! ptt.load()) ? 0.15f : 1.0f;   // −16 dB on top of the canceller
+        // No ducking: the listener's mic is now always open, so "he is talking" is nearly always
+        // true and a duck kept this mic permanently quiet. The voice canceller handles his echo.
+        const float duckTarget = 1.0f;
         const float target = open ? 1.0f : 0.0f, step = 1.0f / kFrame;
         for (int k = 0; k < kFrame; ++k) {
             fade = target > fade ? juce::jmin (target, fade + step) : juce::jmax (target, fade - step);
