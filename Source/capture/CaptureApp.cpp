@@ -201,6 +201,13 @@ public:
 
         // --- audio input
         std::unique_ptr<XmlElement> saved (props->getXmlValue ("audio"));
+        // Before the talkback, the master pair was picked with channel tick-boxes and
+        // saved in the device state. Carry that choice over so nothing changes for him.
+        if (! props->containsKey ("masterStart") && saved != nullptr) {
+            BigInteger bits; bits.parseString (saved->getStringAttribute ("audioDeviceInChans"), 2);
+            const int first = bits.findNextSetBit (0);
+            if (first > 0) { props->setValue ("masterStart", first & ~1); trace ("master: carried over from tick-boxes, input " + String (first + 1)); }
+        }
         // every input and output is opened; which ones are the master, the talkback mic
         // and the talkback output is chosen below (and remembered)
         // Capture only: an output here can stop the input (WASAPI exclusive refuses
@@ -274,9 +281,17 @@ public:
             Timer::callAfterDelay (1500, [safeThis] { if (safeThis != nullptr) safeThis->copyBtn.setButtonText ("Copiar link"); });
         };
         styleButton (whatsBtn, Colour (0xff25d366), Colours::black);
-        whatsBtn.onClick = [this] {
-            if (currentLink.isNotEmpty())
-                URL ("https://wa.me/?text=" + URL::addEscapeChars (u8 ("Mix ao vivo, qualidade máxima: ") + currentLink, true)).launchInDefaultBrowser();
+        whatsBtn.onClick = [this, safeThis] {
+            if (currentLink.isEmpty()) return;
+            const auto text = u8 ("Mix ao vivo, qualidade máxima: ") + currentLink;
+            SystemClipboard::copyTextToClipboard (currentLink);   // whatever happens next, the link is ready to paste
+            const auto q = URL::addEscapeChars (text, false);
+            // WhatsApp Desktop (its whatsapp: link), else WhatsApp Web
+            bool ok = Process::openDocument ("whatsapp://send?text=" + q, {});
+            if (! ok) ok = URL ("https://web.whatsapp.com/send?text=" + q).launchInDefaultBrowser();
+            trace (String ("whatsapp: ") + (ok ? "opened" : "failed"));
+            whatsBtn.setButtonText (ok ? u8 ("Link copiado · cole no WhatsApp") : u8 ("Link copiado (Ctrl+V)"));
+            Timer::callAfterDelay (4000, [safeThis] { if (safeThis != nullptr) safeThis->whatsBtn.setButtonText ("Mandar no WhatsApp"); });
         };
         styleButton (streamBtn, kOrange, Colours::black);
         streamBtn.onClick = [this] {
@@ -314,7 +329,7 @@ public:
         outLab.setText (u8 ("Voz do dB sai em"), dontSendNotification);   // its own output device
         volLab.setText ("Volume da voz", dontSendNotification);
         for (auto* b : { &masterBox, &micBox, &outBox }) addAndMakeVisible (*b);
-        masterBox.onChange = [this] { masterStart = jmax (0, (masterBox.getSelectedId() - 1) * 2); props->setValue ("masterStart", masterStart.load()); updateStreamFormat(); };
+        masterBox.onChange = [this] { setMaster (jmax (0, (masterBox.getSelectedId() - 1) * 2), true); };
         micBox.onChange = [this] { chooseMic (micBox.getSelectedId()); };
         outBox.onChange = [this] {
             talkOutName = outBox.getSelectedId() >= 2 ? outBox.getText() : String();
@@ -481,6 +496,14 @@ private:
         if (chans == 1) peak[1].store (peak[0].load());
         if (loud > kPlayingThreshold) dawLoud = true;
 
+        // every input's level: to find where the Pro Tools signal really arrives
+        for (int c = 0; c < jmin (numIn, kMaxCh); ++c) {
+            auto r = FloatVectorOperations::findMinAndMax (in[c], n);
+            const float pk = jmax (std::abs (r.getStart()), std::abs (r.getEnd()));
+            float prev = chanPeak[c].load();
+            while (pk > prev && ! chanPeak[c].compare_exchange_weak (prev, pk)) {}
+        }
+
         // talkback: the master is the echo reference; the mic may be another input here
         talkback.captureReference (master[0], master[1], n);
         const int mic = micChannel.load();
@@ -544,6 +567,37 @@ private:
         const int outSel = outs.indexOf (talkOutName);
         outBox.setSelectedId (outSel >= 0 ? outSel + 2 : 1, dontSendNotification);
         updateTalkEnabled();
+    }
+
+    void setMaster (int start, bool manual)
+    {
+        masterStart = start;
+        props->setValue ("masterStart", start);
+        if (manual) props->setValue ("masterManual", true);
+        masterBox.setSelectedId (start / 2 + 1, dontSendNotification);
+        trace (String (manual ? "master: chosen " : "master: auto ") + "inputs " + String (start + 1) + "-" + String (start + 2));
+        updateStreamFormat();
+    }
+
+    // Signal on some other pair but not on the master's? Follow it (unless he chose the
+    // master pair by hand), or say where the sound is.
+    String findSignal()
+    {
+        const auto now = Time::getMillisecondCounter();
+        int bestPair = -1; float best = 0;
+        for (int c = 0; c < jmin ((int) devIns, kMaxCh); ++c) {
+            const float pk = chanPeak[c].exchange (0.0f);
+            if (pk > 0.0005f) chanLastMs[c] = now;
+            if (c == micChannel.load()) continue;
+            if (now - chanLastMs[c] < 1500 && pk >= best) { best = pk; bestPair = c & ~1; }
+        }
+        const int m = masterStart.load();
+        const bool masterAlive = now - chanLastMs[m] < 3000 || (m + 1 < kMaxCh && now - chanLastMs[m + 1] < 3000);
+        if (masterAlive || bestPair < 0 || bestPair == m) { silentSinceMs = now; return {}; }
+        if (now - silentSinceMs < 2000) return {};
+        if (! props->getBoolValue ("masterManual", false)) { setMaster (bestPair, false); return {}; }
+        return u8 ("AO VIVO · sem sinal em ") + String (m + 1) + "-" + String (m + 2) + u8 (" · o som chega em ")
+             + String (bestPair + 1) + "-" + String (bestPair + 2) + u8 (": troque em Master");
     }
 
     void updateStreamFormat()
@@ -749,7 +803,8 @@ private:
         else if (st != State::Streaming)            { s = "Conectando..."; }
         else if (! publicLink)                      { s = u8 ("AO VIVO · gerando link público…"); }
         else if (deviceManager.getCurrentAudioDevice() == nullptr) { s = u8 ("Escolha a entrada de áudio aqui embaixo"); }
-        else if (heldPeak[0] < 1e-6f && heldPeak[1] < 1e-6f) { s = u8 ("AO VIVO · sem sinal na entrada"); }
+        else if (const auto hint = findSignal(); hint.isNotEmpty()) { s = hint; }
+        else if (heldPeak[0] < 1e-6f && heldPeak[1] < 1e-6f) { s = u8 ("AO VIVO · sem sinal na entrada (dê play no Pro Tools)"); }
         else                                        { s = "AO VIVO"; col = kGreen; }
 
         if (st == State::Streaming)
@@ -779,6 +834,9 @@ private:
     std::vector<std::unique_ptr<MidiInput>> midiInputs;
     std::atomic<int> masterStart { 0 }, micChannel { -1 };
     std::atomic<int> devIns { 0 };
+    std::atomic<float> chanPeak[64] {};
+    juce::uint32 chanLastMs[64] {};
+    juce::uint32 silentSinceMs = 0;
     AudioDeviceManager voiceOut, micIn;
     VoiceOutCallback voiceOutCb { talkback };
     std::atomic<int> micDevCh { 0 };
