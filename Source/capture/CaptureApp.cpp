@@ -180,7 +180,7 @@ public:
     void paint (Graphics& g) override
     {
         auto r = getLocalBounds().toFloat();
-        g.setColour (kBg); g.fillRoundedRectangle (r, 4.0f);
+        g.setColour (kLine); g.fillRoundedRectangle (r, 4.0f);
         const float db = level > 0 ? 20.0f * std::log10 (level) : -100.0f;
         const float frac = jlimit (0.0f, 1.0f, (db + 60.0f) / 60.0f);
         ColourGradient grad (kGreen, r.getX(), 0, kRed, r.getRight(), 0, false);
@@ -259,7 +259,7 @@ public:
 
         // min = max = kMaxCh hides the channel tick-boxes: channels are picked in the Talkback panel
         selector = std::make_unique<AudioDeviceSelectorComponent> (deviceManager, kMaxCh, kMaxCh, 0, 0, false, false, true, false);
-        addAndMakeVisible (*selector);
+        addChildComponent (*selector);   // inside "Configurar"; opens by itself when there is no device
 
         // --- streamer (to our own relay on this computer)
         SonoRocket::RocketStreamer::Config c;
@@ -286,7 +286,7 @@ public:
         detail.setFont (Font (Font::getDefaultMonospacedFontName(), 13.0f, Font::plain));
         addAndMakeVisible (detail);
 
-        inputTitle.setText (u8 ("Placa de áudio (por onde chega o som do Pro Tools)"), dontSendNotification);
+        inputTitle.setText (u8 ("Placa de áudio"), dontSendNotification);
         inputTitle.setColour (Label::textColourId, kDim);
         addAndMakeVisible (inputTitle);
         addAndMakeVisible (meterL); addAndMakeVisible (meterR);
@@ -322,7 +322,7 @@ public:
             whatsBtn.setButtonText (ok ? u8 ("Abrindo… (link copiado)") : u8 ("Link copiado: Ctrl+V"));
             Timer::callAfterDelay (5000, [safeThis] { if (safeThis != nullptr) safeThis->whatsBtn.setButtonText ("WhatsApp"); });
         };
-        styleButton (streamBtn, kOrange, Colours::black);
+        styleButton (streamBtn, kLine, kText);
         streamBtn.onClick = [this] {
             auto c2 = streamer.getConfig();
             c2.enabled = ! c2.enabled;
@@ -341,7 +341,10 @@ public:
         tip.setColour (Label::textColourId, kDim);
         tip.setFont (Font (12.0f));
         tip.setMinimumHorizontalScale (1.0f);   // wrap instead of squeezing
-        addAndMakeVisible (tip);
+        addChildComponent (tip);
+        styleButton (setupBtn, kLine, kText);
+        setupBtn.onClick = [this] { setSetupOpen (! setupOpen); };
+        addAndMakeVisible (setupBtn);
 
         // --- talkback
         masterStart = jmax (0, props->getIntValue ("masterStart", 0));
@@ -369,7 +372,7 @@ public:
         initMicInput();
         talkback.setPlaybackGain (Decibels::decibelsToGain ((float) props->getDoubleValue ("talkVol", 0.0)));
 
-        talkTitle.setText (u8 ("Talkback (fala com o dB, sem os 2 s de atraso)"), dontSendNotification);
+        talkTitle.setText ("Talkback", dontSendNotification);
         talkTitle.setColour (Label::textColourId, kDim);
         addAndMakeVisible (talkTitle);
         for (auto* l : { &masterLab, &micLab, &outLab, &volLab }) {
@@ -425,12 +428,13 @@ public:
         talkHint.setColour (Label::textColourId, kDim);
         talkHint.setFont (Font (12.0f));
         talkHint.setMinimumHorizontalScale (1.0f);
-        addAndMakeVisible (talkHint);
+        talkBtn.setTooltip (u8 ("Com a DAW parada o microfone fica aberto. Tocando: segure T (janela na frente), Ctrl+T (de qualquer lugar do PC), este botão ou um pedal MIDI."));
         refreshChannelBoxes();
         updateTalkEnabled();
         openMidiInputs();
 
-        setSize (560, kContentHeight);
+        setSize (560, idealHeight());
+        if (deviceManager.getCurrentAudioDevice() == nullptr) setSetupOpen (true);
         startTimerHz (30);
         trace ("ui: ready");
     }
@@ -455,82 +459,97 @@ public:
     {
         g.fillAll (kBg);
         g.setColour (kPanel);
-        g.fillRoundedRectangle (inputPanel.toFloat(), 12.0f);
-        g.fillRoundedRectangle (sharePanel.toFloat(), 12.0f);
-        g.fillRoundedRectangle (talkPanel.toFloat(), 12.0f);
+        for (auto r : { sharePanel, talkPanel, inputPanel }) g.fillRoundedRectangle (r.toFloat(), 12.0f);
         if (! licPanel.isEmpty()) { g.setColour (kOrange); g.fillRoundedRectangle (licPanel.toFloat(), 10.0f); }
     }
 
-    static constexpr int kContentHeight = 980;
     static constexpr int kMaxCh = 64;
+    static constexpr int kSetupHeight = 330;   // the audio device panel, open
+    static constexpr int kStartHeight = 560 + 50;
+    // the height everything needs; the window scrolls below that
+    int idealHeight() const { return 560 + (licBanner ? 50 : 0) + (setupOpen ? kSetupHeight : 0); }
+    std::function<void()> onHeightChanged;
+
+    void setSetupOpen (bool open)
+    {
+        setupOpen = open;
+        selector->setVisible (open); tip.setVisible (open);
+        setupBtn.setButtonText (open ? String ("Fechar") : String ("Configurar"));
+        if (onHeightChanged) onHeightChanged();
+        resized(); repaint();
+    }
 
     void resized() override
     {
-        auto b = getLocalBounds().reduced (16);
-        auto top = b.removeFromTop (34);
-        version.setBounds (top.removeFromRight (90));
+        auto b = getLocalBounds().reduced (16, 12);
+        auto top = b.removeFromTop (32);
+        version.setBounds (top.removeFromRight (70));
         title.setBounds (top);
-        status.setBounds (b.removeFromTop (26));
-        detail.setBounds (b.removeFromTop (20));
-        b.removeFromTop (10);
+        status.setBounds (b.removeFromTop (24));
+        {   // the master's level, one line: L ▬▬▬ −12.0   R ▬▬▬ −12.1
+            auto r = b.removeFromTop (16);
+            const int half = r.getWidth() / 2 - 6;
+            auto one = [] (juce::Rectangle<int> c, Label& lab, LevelMeter& m, Label& db) {
+                lab.setBounds (c.removeFromLeft (14)); db.setBounds (c.removeFromRight (50)); m.setBounds (c.reduced (2, 4));
+            };
+            one (r.removeFromLeft (half), labL, meterL, dbL); r.removeFromLeft (12); one (r, labR, meterR, dbR);
+        }
+        detail.setBounds (b.removeFromTop (18));
+        b.removeFromTop (8);
         if (licBanner) {
             licPanel = b.removeFromTop (40);
             auto l = licPanel.reduced (10, 6);
-            regBtn.setBounds (l.removeFromRight (100)); l.removeFromRight (6);
-            buyBtn.setBounds (l.removeFromRight (100)); l.removeFromRight (6);
+            regBtn.setBounds (l.removeFromRight (96)); l.removeFromRight (6);
+            buyBtn.setBounds (l.removeFromRight (96)); l.removeFromRight (6);
             licLabel.setBounds (l);
             b.removeFromTop (10);
         } else licPanel = {};
 
-        sharePanel = b.removeFromTop (170);
+        sharePanel = b.removeFromTop (100);
         {
-            auto s = sharePanel.reduced (12);
-            link.setBounds (s.removeFromTop (36));
-            s.removeFromTop (10);
-            auto row = s.removeFromTop (40);
-            const int w3 = (row.getWidth() - 20) / 3;
-            copyBtn.setBounds (row.removeFromLeft (w3));
-            row.removeFromLeft (10);
-            whatsBtn.setBounds (row.removeFromLeft (w3));
-            row.removeFromLeft (10);
-            videoBtn.setBounds (row);
-            s.removeFromTop (10);
-            streamBtn.setBounds (s.removeFromTop (44));
+            auto sp = sharePanel.reduced (12);
+            link.setBounds (sp.removeFromTop (34));
+            sp.removeFromTop (8);
+            auto row = sp.removeFromTop (34);
+            const int w = (row.getWidth() - 24) / 4;
+            for (auto* btn : { &copyBtn, &whatsBtn, &videoBtn }) { btn->setBounds (row.removeFromLeft (w)); row.removeFromLeft (8); }
+            streamBtn.setBounds (row);
         }
-        b.removeFromTop (12);
+        b.removeFromTop (10);
 
-        talkPanel = b.removeFromTop (250);
+        talkPanel = b.removeFromTop (218);
         {
             auto t = talkPanel.reduced (12);
-            talkTitle.setBounds (t.removeFromTop (22));
-            auto row = [&] (Label& l, Component& c) { auto r = t.removeFromTop (26); l.setBounds (r.removeFromLeft (130)); c.setBounds (r); t.removeFromTop (4); };
-            { auto r = t.removeFromTop (26); masterLab.setBounds (r.removeFromLeft (130)); pluginBtn.setBounds (r.removeFromRight (120)); r.removeFromRight (6); masterBox.setBounds (r); t.removeFromTop (4); }
-            row (micLab, micBox);
-            { auto r = t.removeFromTop (8); micMeter.setBounds (r.withTrimmedLeft (130).reduced (0, 1)); t.removeFromTop (4); }
-            { auto r = t.removeFromTop (26); outLab.setBounds (r.removeFromLeft (130)); testBtn.setBounds (r.removeFromRight (70)); r.removeFromRight (6); outBox.setBounds (r); t.removeFromTop (4); }
-            row (volLab, talkVol);
-            auto last = t.removeFromTop (36);
-            talkBtn.setBounds (last.removeFromRight (200));
-            last.removeFromRight (8);
-            talkState.setBounds (last);
-            talkHint.setBounds (t);
+            { auto r = t.removeFromTop (22); talkTitle.setBounds (r.removeFromLeft (90)); talkState.setBounds (r); }
+            t.removeFromTop (4);
+            const int lw = 104;
+            auto row = [&] (Label& l, Component& c, Component* extra, int extraW) {
+                auto r = t.removeFromTop (26); l.setBounds (r.removeFromLeft (lw));
+                if (extra != nullptr) { extra->setBounds (r.removeFromRight (extraW)); r.removeFromRight (6); }
+                c.setBounds (r); t.removeFromTop (4);
+            };
+            row (masterLab, masterBox, &pluginBtn, 112);
+            row (micLab, micBox, nullptr, 0);
+            { auto r = t.removeFromTop (6); micMeter.setBounds (r.withTrimmedLeft (lw)); t.removeFromTop (4); }
+            row (outLab, outBox, &testBtn, 70);
+            row (volLab, talkVol, nullptr, 0);
+            t.removeFromTop (2);
+            talkBtn.setBounds (t.removeFromTop (32));
         }
-        b.removeFromTop (12);
+        b.removeFromTop (10);
 
-        inputPanel = b;
-        auto p = inputPanel.reduced (12);
-        inputTitle.setBounds (p.removeFromTop (22));
-        auto meterRow = [&] (Label& lab, LevelMeter& m, Label& db) {
-            auto r = p.removeFromTop (16);
-            lab.setBounds (r.removeFromLeft (16));
-            db.setBounds (r.removeFromRight (56));
-            m.setBounds (r.reduced (4, 3));
-            p.removeFromTop (4);
-        };
-        meterRow (labL, meterL, dbL);
-        meterRow (labR, meterR, dbR);
-        tip.setBounds (p.removeFromBottom (34));
-        selector->setBounds (p);
+        inputPanel = b.removeFromTop (46 + (setupOpen ? kSetupHeight : 0));
+        {
+            auto p = inputPanel.reduced (12, 10);
+            auto r = p.removeFromTop (26);
+            setupBtn.setBounds (r.removeFromRight (110)); r.removeFromRight (8);
+            inputTitle.setBounds (r);
+            if (setupOpen) {
+                p.removeFromTop (8);
+                tip.setBounds (p.removeFromBottom (34));
+                selector->setBounds (p);
+            }
+        }
     }
 
 private:
@@ -682,6 +701,7 @@ private:
         if (show != licBanner) {
             licBanner = show;
             for (auto* c : std::initializer_list<Component*> { &licLabel, &buyBtn, &regBtn }) c->setVisible (show);
+            if (onHeightChanged) onHeightChanged();
             resized(); repaint();
         }
         // once per run, a minute in: the message to buy
@@ -967,6 +987,13 @@ private:
 
         if (s != lastStatus) { trace ("status: " + s + (currentLink.isNotEmpty() ? "  " + currentLink : String())); lastStatus = s; }
         status.setText (u8 ("● ") + s, dontSendNotification);
+        {   // the device, at a glance, while its settings stay folded away
+            String dev = u8 ("Placa de áudio · ");
+            if (auto* d = deviceManager.getCurrentAudioDevice())
+                dev << d->getName() << u8 (" · ") << String (d->getCurrentSampleRate(), 0) << " Hz";
+            else dev << u8 ("nenhuma escolhida");
+            if (inputTitle.getText() != dev) inputTitle.setText (dev, dontSendNotification);
+        }
         status.setColour (Label::textColourId, col);
         detail.setText (d, dontSendNotification);
         link.setText (currentLink.isNotEmpty() ? currentLink : u8 ("o link aparece aqui em alguns segundos"), dontSendNotification);
@@ -1020,7 +1047,9 @@ private:
     Label talkTitle, masterLab, micLab, outLab, volLab, talkState, talkHint;
     ComboBox masterBox, micBox, outBox;
     Slider talkVol;
-    TextButton testBtn { "Testar" };
+    TextButton testBtn { "Testar" }, setupBtn { "Configurar" };
+    bool setupOpen = false;
+    TooltipWindow tooltips { this, 400 };
     HoldButton talkBtn { "Segure para falar (Ctrl+T)" };
     TextButton copyBtn { "Copiar link" }, whatsBtn { "WhatsApp" }, streamBtn { "Parar" }, videoBtn { u8 ("Vídeo") };
     juce::Rectangle<int> inputPanel, sharePanel, talkPanel;
@@ -1056,7 +1085,7 @@ private:
             setResizeLimits (480, 420, 900, 1400);
             const auto area = Desktop::getInstance().getDisplays().getPrimaryDisplay() != nullptr
                                 ? Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea : juce::Rectangle<int> (0, 0, 1366, 728);
-            setSize (560, jmin (MainComponent::kContentHeight, area.getHeight() - 40));
+            setSize (560, jmin (MainComponent::kStartHeight, area.getHeight() - 40));
             centreWithSize (getWidth(), getHeight());
             setVisible (true);
         }
@@ -1065,11 +1094,16 @@ private:
     // Scrolls the content on short screens (1366x768 laptops).
     struct Scroller : Component
     {
-        Scroller() { vp.setViewedComponent (&content, false); vp.setScrollBarsShown (true, false); addAndMakeVisible (vp); setSize (560, MainComponent::kContentHeight); }
+        Scroller()
+        {
+            vp.setViewedComponent (&content, false); vp.setScrollBarsShown (true, false); addAndMakeVisible (vp);
+            content.onHeightChanged = [this] { resized(); };
+            setSize (560, content.idealHeight());
+        }
         void resized() override
         {
             vp.setBounds (getLocalBounds());
-            content.setSize (vp.getMaximumVisibleWidth(), jmax (getHeight(), MainComponent::kContentHeight));
+            content.setSize (vp.getMaximumVisibleWidth(), jmax (getHeight(), content.idealHeight()));
         }
         Viewport vp;
         MainComponent content;

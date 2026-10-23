@@ -7,8 +7,8 @@ PRIMEIRA VEZ
 2. Dentro dela, dê dois cliques em SonoRocket.exe.
    Se aparecer "O Windows protegeu o computador": clique em "Mais informações"
    e depois em "Executar assim mesmo". (Só na primeira vez.)
-3. Na parte de baixo do SonoRocket, em "Entrada de áudio", escolha a mesma
-   entrada por onde o som do Mac (Pro Tools) já chega neste computador.
+3. Lá embaixo, em "Placa de áudio", clique em Configurar e escolha a placa
+   por onde o som do Mac (Pro Tools) já chega neste computador.
    - Se aparecer o tipo "Windows Audio (Exclusive Mode)", use esse.
    - Use a mesma taxa de amostragem da sessão (ex.: 48000).
    - Toque algo no Pro Tools: as barrinhas L e R têm que mexer.
@@ -55,6 +55,9 @@ VÍDEO (substitui o Google Meet)
    Permita a câmera. Você vê o dB grande e a sua imagem pequena no canto.
 3. O dB liga a câmera dele na página dele ("Ligar câmera").
    O áudio continua pelo SonoRocket (mix + talkback); a página de vídeo não tem som.
+4. Compartilhar a tela: na página de vídeo, "Compartilhar tela".
+   Para mostrar a tela do Mac do Pro Tools: clique em "Link p/ outro computador",
+   abra o link no Mac (Chrome) e clique em "Compartilhar tela" lá.
 
 SE ALGO NÃO FUNCIONAR
 - "rocket-relay não encontrado" / "falta o rocket-relay.exe": o SonoRocket.exe foi aberto

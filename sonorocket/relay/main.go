@@ -81,7 +81,8 @@ type listener struct {
 	id    uint16
 	once  sync.Once
 
-	needKey bool // video queue overflowed: skip delta frames until the next keyframe (room lock)
+	// video queue overflowed: from each sender, skip delta frames until its next keyframe (room lock)
+	waitKey map[uint16]bool
 }
 
 // Video (PROTOCOL.md, "Video"): pages encode their camera (WebCodecs) and the relay
@@ -89,7 +90,7 @@ type listener struct {
 const videoQueue = 48
 
 // [6][from u16][flags u8: 1 = keyframe][ts u32][encoded chunk]
-func validVideo(p []byte) bool { return len(p) > 8 && len(p) < 1<<20 }
+func validVideo(p []byte) bool { return len(p) > 8 && len(p) < 4<<20 } // a 1080p screen keyframe can be big
 
 // relayVideo forwards a frame or control message from one page to the others.
 // A page that can't keep up loses its queue and waits for a keyframe, and the
@@ -100,13 +101,17 @@ func (r *room) relayVideo(from *listener, m wsMsg, key bool) {
 		if l == from {
 			continue
 		}
-		if m.binary && l.needKey && !key {
-			continue
+		var src uint16
+		if m.binary {
+			src = binary.LittleEndian.Uint16(m.data[1:3])
+			if l.waitKey[src] && !key {
+				continue
+			}
 		}
 		select {
 		case l.video <- m:
 			if m.binary && key {
-				l.needKey = false
+				delete(l.waitKey, src)
 			}
 		default:
 			for drained := false; !drained; {
@@ -116,7 +121,14 @@ func (r *room) relayVideo(from *listener, m wsMsg, key bool) {
 					drained = true
 				}
 			}
-			l.needKey, askKey = true, true
+			// everything queued is gone: every current sender must start again from a keyframe
+			l.waitKey = map[uint16]bool{}
+			for o := range r.listeners {
+				if o != l {
+					l.waitKey[o.id] = true
+				}
+			}
+			askKey = true
 		}
 	}
 	if askKey {
@@ -749,7 +761,7 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 	writeStatus()
 
 	// reader: talkback from this listener (binary type 5) and noticing the close
-	conn.SetReadLimit(1 << 20) // keyframes
+	conn.SetReadLimit(4 << 20) // keyframes of a shared screen
 	go func() {
 		for {
 			t, p, err := conn.ReadMessage()
