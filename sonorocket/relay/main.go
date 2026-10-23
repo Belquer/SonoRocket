@@ -192,6 +192,7 @@ type room struct {
 	// A "talk" sender: talkback only, while the master comes from another sender (a DAW
 	// plugin on the same computer). It gets the listeners' voice, and a copy of the
 	// master for its echo canceller.
+	chat          [][]byte // last chat messages (JSON), for pages that join later
 	talker        net.Conn
 	talkerVoice   chan []byte
 	talkerMaster  chan []byte
@@ -755,6 +756,12 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 	}
+	for _, c := range r.chat { // the conversation so far
+		select {
+		case l.out <- wsMsg{false, c}:
+		default:
+		}
+	}
 	count := len(r.listeners)
 	r.mu.Unlock()
 	log.Printf("[%s] listener joined (%d)", name, count)
@@ -776,7 +783,21 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 				// video control between pages: {"type":"vconf"|"vkey"|"vbye", ...}, stamped with the sender
 				var m map[string]any
 				if json.Unmarshal(p, &m) == nil {
-					if ty, _ := m["type"].(string); ty == "vconf" || ty == "vkey" || ty == "vbye" {
+					if ty, _ := m["type"].(string); ty == "chat" {
+						text, _ := m["text"].(string)
+						name, _ := m["name"].(string)
+						text, name = strings.TrimSpace(text), strings.TrimSpace(name)
+						if text != "" && len(text) <= 2000 && len(name) <= 60 {
+							b, _ := json.Marshal(map[string]any{"type": "chat", "text": text, "name": name, "from": l.id, "t": time.Now().UnixMilli()})
+							r.mu.Lock()
+							r.chat = append(r.chat, b)
+							if len(r.chat) > 50 {
+								r.chat = r.chat[len(r.chat)-50:]
+							}
+							r.relayVideo(l, wsMsg{false, b}, false) // same priority lane as video
+							r.mu.Unlock()
+						}
+					} else if ty == "vconf" || ty == "vkey" || ty == "vbye" {
 						m["from"] = l.id
 						b, _ := json.Marshal(m)
 						r.mu.Lock()

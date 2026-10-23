@@ -86,9 +86,16 @@
   footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; color: var(--dim); font-size: 11px; }
   .sig { font-family: var(--mono); color: var(--text); } .sig b { color: var(--hot); }
 
-  /* studio pages: picture only, no master audio */
-  body.studio .side, body.studio #playBtn, body.studio #camBtnL { display: none !important; }
-  body.studio .layout { grid-template-columns: 1fr; }
+  .chatlog { max-height: 190px; min-height: 60px; overflow-y: auto; display: grid; gap: 6px; align-content: start; font-size: 13px; }
+  .msg { overflow-wrap: anywhere; } .msg b { color: var(--hot); font-weight: 600; margin-right: 6px; } .msg.me b { color: var(--ok); }
+  .msg time { color: var(--dim); font: 10px var(--mono); margin-left: 6px; }
+  .msg a { color: #7fc1ff; }
+  #chatForm input { flex: 1 1 auto; font: 13px system-ui, sans-serif; padding: 7px 9px; }
+  button.tiny { padding: 2px 8px; font-size: 11px; }
+  body.studio .chatlog { max-height: calc(100dvh - 260px); }
+
+  /* studio pages: picture and chat, no master audio */
+  body.studio #playBtn, body.studio .side > :not(#chatPanel) { display: none !important; }
   body.studio .stage { height: calc(100dvh - 140px); aspect-ratio: auto; }
   body:not(.studio) .studioOnly { display: none !important; }
   body.tela #camBtn, body.tela #otherPc { display: none !important; }
@@ -172,6 +179,15 @@
         </div>
       </section>
 
+      <section class="panel" id="chatPanel">
+        <div class="line"><span class="ptitle" style="flex:1">Chat</span><button class="ghost tiny" id="nameBtn" title="Mudar seu nome no chat"></button></div>
+        <div class="chatlog" id="chatLog"><div class="sub" id="chatEmpty">links e recados aparecem aqui</div></div>
+        <form class="line" id="chatForm" autocomplete="off">
+          <input type="text" id="chatInput" maxlength="1000" placeholder="mensagem ou link…" aria-label="Mensagem">
+          <button class="ghost" id="chatSend">Enviar</button>
+        </form>
+      </section>
+
       <details class="panel" id="details">
         <summary>detalhes</summary>
         <div class="chips">
@@ -238,9 +254,11 @@ function updateLive() {
 async function buildAudio(sr, ch) {
   if (ctx && ctx.sampleRate === sr && node && node.__ch === ch) return;
   if (ctx) { try { await ctx.close(); } catch {} ctx = null; node = null; voiceNode = null; micNode = null; }
-  try { ctx = new AudioContext({ sampleRate: sr, latencyHint: 'playback' }); }
-  catch { ctx = new AudioContext({ latencyHint: 'playback' }); }
-  await ctx.audioWorklet.addModule('rocket-worklet.js');
+  let c;
+  try { c = new AudioContext({ sampleRate: sr, latencyHint: 'playback' }); }
+  catch { c = new AudioContext({ latencyHint: 'playback' }); }
+  await c.audioWorklet.addModule('rocket-worklet.js');
+  ctx = c;   // only once its worklets exist: the mic may attach to it at any moment
   node = new AudioWorkletNode(ctx, 'rocket-player', {
     numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
     processorOptions: { channels: ch, capacitySeconds: 120 },
@@ -271,6 +289,7 @@ function connect() {
     if (typeof e.data === 'string') {
       const m = JSON.parse(e.data);
       if (m.type === 'vconf' || m.type === 'vkey' || m.type === 'vbye') { videoControl(m); return; }
+      if (m.type === 'chat') { addMsg(m.name, m.text, m.t, false); return; }
       if (m.type === 'sender') {
         senderOnline = !!m.online;
         chip('cSender', m.online ? 'emissor: ao vivo' : 'emissor: offline', m.online ? 'ok' : 'warn');
@@ -724,6 +743,45 @@ if (STUDIO && roomName) {   // studio pages connect straight away; the PC's page
   if (!TELA) startCam();
   else $('vidInfo').textContent = 'clique em Compartilhar tela e escolha a janela do Pro Tools (ou a tela inteira)';
 }
+
+// ---------- chat: links and short messages, through the relay ----------
+let myName = localStorageGet('rocket.name') || (STUDIO ? 'Estúdio' : 'Ouvinte');
+const showName = () => { $('nameBtn').textContent = myName + ' ✎'; };
+showName();
+$('nameBtn').onclick = () => {
+  const n = (prompt('Seu nome no chat', myName) || '').trim().slice(0, 40);
+  if (n) { myName = n; localStorageSet('rocket.name', n); showName(); }
+};
+const URL_RE = /\bhttps?:\/\/[^\s<>"]+/gi;
+function addMsg(name, text, t, me) {
+  $('chatEmpty')?.remove();
+  const log = $('chatLog'), stick = log.scrollHeight - log.scrollTop - log.clientHeight < 30;
+  const el = document.createElement('div'); el.className = 'msg' + (me ? ' me' : '');
+  const b = document.createElement('b'); b.textContent = name || '—'; el.append(b);
+  let last = 0;
+  for (const m of text.matchAll(URL_RE)) {   // links become links; everything else stays plain text
+    el.append(text.slice(last, m.index));
+    const a = document.createElement('a'); a.href = m[0]; a.textContent = m[0]; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    el.append(a); last = m.index + m[0].length;
+  }
+  el.append(text.slice(last));
+  const tm = document.createElement('time'); tm.textContent = new Date(t || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  el.append(tm);
+  log.append(el);
+  if (stick || me) log.scrollTop = log.scrollHeight;
+  while (log.children.length > 200) log.firstChild.remove();
+}
+$('chatForm').onsubmit = (e) => {
+  e.preventDefault();
+  const text = $('chatInput').value.trim();
+  if (!text) return;
+  if (!ws) connect();
+  if (!wsOpen()) { $('chatInput').placeholder = 'conectando… tente de novo'; return; }
+  sendJSON({ type: 'chat', text, name: myName });
+  addMsg(myName, text, Date.now(), true);
+  $('chatInput').value = '';
+};
+$('chatInput').addEventListener('keydown', (e) => e.stopPropagation());   // typing T here never mutes
 
 $('resyncBtn').onclick = () => { node && node.port.postMessage({ type: 'flush' }); };
 $('copyBtn').onclick = async () => {
