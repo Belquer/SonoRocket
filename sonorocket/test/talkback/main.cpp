@@ -80,7 +80,7 @@ int main (int argc, char** argv)
             for (auto& tp : taps) { const int k = (hp - tp.d + histN) % histN; e += tp.gl * hL[(size_t) k] + tp.gr * hR[(size_t) k]; }
             hp = (hp + 1) % histN;
             float v = 0;
-            if (t >= 8.0 && t < 11.0) {   // "voice": 180 Hz buzz with formant-ish harmonics, syllable envelope
+            if ((t >= 8.0 && t < 11.0) || (t >= 12.3 && t < 12.9)) {   // 12.3–12.9: talking over the listener (double talk)   // "voice": 180 Hz buzz with formant-ish harmonics, syllable envelope
                 ph += 2 * M_PI * 180 / sr;
                 const float env = (float) std::pow (std::sin (M_PI * std::fmod (t * 4, 1.0)), 2);
                 v = 0.25f * env * (float) (std::sin (ph) + 0.5 * std::sin (3 * ph) + 0.3 * std::sin (5 * ph));

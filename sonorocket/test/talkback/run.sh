@@ -9,4 +9,4 @@ cmake --build "$B" >/dev/null
 RP=$!; trap 'kill $RP' EXIT; sleep 1
 "$B/talkback_test_artefacts/Release/talkback_test" talk-test "${MIC_DELAY_MS:-0}" "${MODE:-}" | NODE_PATH="$HERE/../../tools/node_modules" node "$HERE/talk-listen.js" talk-test "$B/rec.json" > "$B/log.txt"
 cat "$B/log.txt" | grep RESULT
-VOICE_ECHO_MIN=${VOICE_ECHO_MIN:-$([ "${MODE:-}" = plugin ] && echo 12 || echo 15)} python3 "$HERE/check.py" "$B/log.txt" "$B/rec.json"
+VOICE_ECHO_MIN=${VOICE_ECHO_MIN:-$([ "${MODE:-}" = plugin ] && echo 30 || echo 30)} python3 "$HERE/check.py" "$B/log.txt" "$B/rec.json"

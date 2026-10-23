@@ -61,7 +61,8 @@ public:
 
     static constexpr int kRate = RocketStreamer::kVoiceRate;
     static constexpr int kFrame = 160;               // 10 ms at 16 kHz
-    static constexpr int kTailMs = 250;              // echo tail the canceller models
+    static constexpr int kTailMs = 250;              // echo tail the speakers' canceller models
+    static constexpr int kVoiceTailMs = 400;         // the voice plays on another device: longer, looser path
 
     // One audio stream from an audio thread to the worker, resampled to 16 kHz.
     struct Lane
@@ -89,7 +90,7 @@ private:
     void feedPlayback();
 
     RocketStreamer& streamer;
-    Lane ref, mic;   // ref: master L/R; mic: mono
+    Lane ref, mic, vref;   // ref: master L/R; mic: mono; vref: the listener's voice as handed to the output
 
     // worker → output: mono voice at the output rate
     juce::HeapBlock<float> playData;
@@ -111,9 +112,11 @@ private:
     SpeexPreprocessState_* pre = nullptr;
 
     std::vector<float> voiceUp;
-    std::vector<float> voiceRef;   // listener voice as played (16 kHz): third echo reference
     float fade = 0.0f;   // send gate ramp, avoids clicks at open/close
-    float duck = 1.0f;   // hands-free mic ducked while the listener talks
+    // Residual echo suppressor for the listener's voice: while it plays and the studio isn't
+    // talking over it, the mic goes down; double talk (the studio clearly louder than the
+    // expected echo) keeps it open.
+    float supGain = 1.0f, refEnv = 0.0f, erl = 0.3f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Talkback)
 };

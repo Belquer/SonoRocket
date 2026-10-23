@@ -100,7 +100,7 @@ Talkback::Talkback (RocketStreamer& s) : juce::Thread ("SonoRocket talkback"), s
     // we play (so it can't come back to him). One canceller with both would let the loud
     // master starve the voice path's adaptation.
     echo = speex_echo_state_init_mc (kFrame, kRate * kTailMs / 1000, 1, 2);
-    echoVoice = speex_echo_state_init (kFrame, kRate * kTailMs / 1000);
+    echoVoice = speex_echo_state_init (kFrame, kRate * kVoiceTailMs / 1000);
     int rate = kRate;
     speex_echo_ctl (echo, SPEEX_ECHO_SET_SAMPLING_RATE, &rate);
     speex_echo_ctl (echoVoice, SPEEX_ECHO_SET_SAMPLING_RATE, &rate);
@@ -143,7 +143,7 @@ void Talkback::prepareMic (double sr)
     mic.prepare (1, sr);
     ref.pending.clear();
     speex_echo_state_reset (echo); speex_echo_state_reset (echoVoice);
-    fade = 0.0f; duck = 1.0f;
+    fade = 0.0f; supGain = 1.0f; refEnv = 0.0f; erl = 0.3f;
 }
 
 void Talkback::stopMic()
@@ -164,6 +164,7 @@ void Talkback::prepareOutput (double sr)
     playFifo = std::make_unique<juce::AbstractFifo> (frames);
     int err = 0;
     up = speex_resampler_init (1, kRate, (spx_uint32_t) outRate, 5, &err);
+    vref.prepare (1, outRate);
     sources().clear();
     outReady = (up != nullptr);
 }
@@ -196,7 +197,9 @@ void Talkback::render (float* out, int n) noexcept
     juce::FloatVectorOperations::multiply (out, playbackGain.load(), n);
     auto r = juce::FloatVectorOperations::findMinAndMax (out, n);
     const float pk = juce::jmax (std::abs (r.getStart()), std::abs (r.getEnd()));
-    if (pk > 0.05f) lastVoiceMs = juce::Time::getMillisecondCounter();   // real speech, not room noise
+    // what actually goes to the device, in step with the output's clock: the echo reference
+    const float* ch[1] = { out };
+    vref.push (ch, n, 1.0f);
     float prev = voicePeak.load();
     while (pk > prev && ! voicePeak.compare_exchange_weak (prev, pk)) {}
 }
@@ -216,6 +219,7 @@ void Talkback::processCaptured()
 {
     ref.pull();
     mic.pull();
+    vref.pull();
     if (! mic.ready.load()) { ref.pending.clear(); sending = false; return; }
 
     // Keep the reference and the mic within 100 ms of each other. Same device: they
@@ -231,19 +235,24 @@ void Talkback::processCaptured()
     } else ref.pending.clear();
 
     int16_t rec[kFrame], play[kFrame * 2], vplay[kFrame], mid[kFrame], out[kFrame];
-    // the voice we played: consumed in step with the mic (silence when nothing played)
-    if ((int) voiceRef.size() > 3200) voiceRef.erase (voiceRef.begin(), voiceRef.end() - 320);
+    // The voice we played, consumed in step with the mic. Both lanes fill in real time, so
+    // their offset is the devices' latencies (well inside the voice canceller's tail);
+    // drift between the two clocks is trimmed here.
+    if (vref.ready.load()) {
+        const int d = vref.frames16() - mic.frames16();
+        if (d > 1600) vref.drop16 (d - 160);
+    } else vref.pending.clear();
     while (mic.frames16() >= kFrame + lag && (! haveRef || ref.frames16() >= kFrame)) {
         const float* m = mic.pending.data();
         const float* f = haveRef ? ref.pending.data() : nullptr;
-        const int vr = juce::jmin (kFrame, (int) voiceRef.size());
+        const int vr = juce::jmin (kFrame, vref.frames16());
         for (int k = 0; k < kFrame; ++k) {
             rec[k]          = toS16 (m[k]);
             play[k * 2 + 0] = f ? toS16 (f[k * 2 + 0]) : (int16_t) 0;
             play[k * 2 + 1] = f ? toS16 (f[k * 2 + 1]) : (int16_t) 0;
-            vplay[k]        = k < vr ? toS16 (voiceRef[(size_t) k]) : (int16_t) 0;
+            vplay[k]        = k < vr ? toS16 (vref.pending[(size_t) k]) : (int16_t) 0;
         }
-        voiceRef.erase (voiceRef.begin(), voiceRef.begin() + vr);
+        vref.drop16 (vr);
         mic.drop16 (kFrame);
         if (haveRef) ref.drop16 (kFrame);
 
@@ -252,24 +261,36 @@ void Talkback::processCaptured()
         speex_echo_cancellation (echoVoice, mid, vplay, out);
         speex_preprocess_run (pre, out);
 
+        // residual echo suppression (see header): levels are frame RMS; the reference envelope
+        // holds ~200 ms so it still covers the echo arriving after the voice
+        double es = 0, rs = 0;
+        for (int k = 0; k < kFrame; ++k) { es += (double) out[k] * out[k]; rs += (double) vplay[k] * vplay[k]; }
+        const float outRms = (float) std::sqrt (es / kFrame) / 32768.0f, refRms = (float) std::sqrt (rs / kFrame) / 32768.0f;
+        refEnv = juce::jmax (refRms, refEnv * 0.95f);
+        float supTarget = 1.0f;
+        if (refEnv > 0.003f) {
+            const float echoEst = erl * refEnv;
+            const bool doubleTalk = outRms > 3.0f * echoEst + 0.002f;
+            if (! doubleTalk) {
+                supTarget = 0.06f;   // −24 dB
+                if (refRms > 0.003f) erl = juce::jlimit (0.005f, 2.0f, erl + 0.03f * (outRms / refEnv - erl));
+            }
+        }
+
         float pk = 0.0f;
-        for (int k = 0; k < kFrame; ++k) pk = juce::jmax (pk, std::abs (out[k] / 32768.0f));
+        for (int k = 0; k < kFrame; ++k) pk = juce::jmax (pk, std::abs (out[k] / 32768.0f * supTarget));
         float prev = micPeak.load();
         while (pk > prev && ! micPeak.compare_exchange_weak (prev, pk)) {}
 
-        // gate with a 10 ms ramp; a hands-free mic (not push-to-talk) is ducked
-        // while the listener's voice plays, so he never hears himself come back
+        // gate with a 10 ms ramp, then the suppressor (fast down, ~20 ms up on double talk)
         const bool open = micOpen.load();
         sending = open;
         if (! open && fade <= 0.0f) continue;
-        // No ducking: the listener's mic is now always open, so "he is talking" is nearly always
-        // true and a duck kept this mic permanently quiet. The voice canceller handles his echo.
-        const float duckTarget = 1.0f;
         const float target = open ? 1.0f : 0.0f, step = 1.0f / kFrame;
         for (int k = 0; k < kFrame; ++k) {
             fade = target > fade ? juce::jmin (target, fade + step) : juce::jmax (target, fade - step);
-            duck += (duckTarget - duck) * (duckTarget < duck ? 0.004f : 0.0015f);   // ~15 ms down, ~40 ms up
-            out[k] = (int16_t) (out[k] * fade * duck);
+            supGain += (supTarget - supGain) * (supTarget < supGain ? 0.01f : 0.003f);
+            out[k] = (int16_t) (out[k] * fade * supGain);
         }
         streamer.pushVoice (out, kFrame);
     }
@@ -331,8 +352,6 @@ void Talkback::feedPlayback()
             any = true;
         }
         if (! any) break;
-        voiceRef.insert (voiceRef.end(), mix, mix + kFrame);   // echo reference, at the playback gain below
-        for (size_t k = voiceRef.size() - kFrame; k < voiceRef.size(); ++k) voiceRef[k] *= playbackGain.load();
 
         spx_uint32_t inLen = kFrame;
         spx_uint32_t outLen = (spx_uint32_t) (kFrame * outRate / kRate) + 32;
