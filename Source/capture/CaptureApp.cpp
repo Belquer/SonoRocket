@@ -30,6 +30,20 @@ static const Colour kBg (0xff0b0b0c), kPanel (0xff151517), kLine (0xff26262a), k
 
 static String u8 (const char* s) { return String::fromUTF8 (s); }
 
+// RFC 3986: everything but unreserved characters as %XX of its UTF-8 bytes
+static String percentEncode (const String& s)
+{
+    String out;
+    for (auto* p = s.toRawUTF8(); *p != 0; ++p) {
+        const auto c = (unsigned char) *p;
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~')
+            out << (char) c;
+        else
+            out << "%" << String::toHexString ((int) c).paddedLeft ('0', 2).toUpperCase();
+    }
+    return out;
+}
+
 // app.log next to the settings: what happened, for remote support ("me manda o app.log")
 static void trace (const String& msg)
 {
@@ -95,7 +109,16 @@ private:
     void launch()
     {
         const auto relay = findHelper ("rocket-relay");
-        if (! relay.existsAsFile()) { setError (u8 ("rocket-relay não encontrado ao lado do app")); return; }
+        if (! relay.existsAsFile()) {
+            const auto exe = File::getSpecialLocation (File::currentExecutableFile);
+            trace ("relay: rocket-relay missing next to " + exe.getFullPathName());
+            // Double-clicking the exe inside the zip runs a lone temporary copy; otherwise an
+            // antivirus probably quarantined the relay.
+            const bool fromZip = exe.getFullPathName().containsIgnoreCase ("\\Temp") || exe.getFullPathName().containsIgnoreCase (".zip");
+            setError (fromZip ? u8 ("abra pela pasta extraída: botão direito no zip › Extrair Tudo")
+                              : u8 ("falta o rocket-relay.exe na pasta (o antivírus pode ter removido)"));
+            return;
+        }
        #if ! JUCE_WINDOWS
         relay.setExecutePermission (true);
         findHelper ("cloudflared").setExecutePermission (true);
@@ -287,15 +310,17 @@ public:
         styleButton (whatsBtn, Colour (0xff25d366), Colours::black);
         whatsBtn.onClick = [this, safeThis] {
             if (currentLink.isEmpty()) return;
-            const auto text = u8 ("Mix ao vivo, qualidade máxima: ") + currentLink;
             SystemClipboard::copyTextToClipboard (currentLink);   // whatever happens next, the link is ready to paste
-            const auto q = URL::addEscapeChars (text, false);
-            // WhatsApp Desktop (its whatsapp: link), else WhatsApp Web
-            bool ok = Process::openDocument ("whatsapp://send?text=" + q, {});
-            if (! ok) ok = URL ("https://web.whatsapp.com/send?text=" + q).launchInDefaultBrowser();
-            trace (String ("whatsapp: ") + (ok ? "opened" : "failed"));
-            whatsBtn.setButtonText (u8 ("Link copiado"));
-            Timer::callAfterDelay (4000, [safeThis] { if (safeThis != nullptr) safeThis->whatsBtn.setButtonText ("WhatsApp"); });
+            // WhatsApp's own share link: the browser hands it to WhatsApp Desktop when installed,
+            // otherwise offers WhatsApp Web, with the contact picker and the text filled in.
+            // Encoded by hand (the room link carries ? and =, which must not leak into wa.me's query),
+            // and opened by the shell directly, so nothing re-parses it on the way.
+            const auto url = "https://wa.me/?text=" + percentEncode (u8 ("Mix ao vivo, qualidade máxima: ") + currentLink);
+            bool ok = Process::openDocument (url, {});
+            if (! ok) ok = URL (url).launchInDefaultBrowser();
+            trace ("whatsapp: " + String (ok ? "opened " : "FAILED ") + url);
+            whatsBtn.setButtonText (ok ? u8 ("Abrindo… (link copiado)") : u8 ("Link copiado: Ctrl+V"));
+            Timer::callAfterDelay (5000, [safeThis] { if (safeThis != nullptr) safeThis->whatsBtn.setButtonText ("WhatsApp"); });
         };
         styleButton (streamBtn, kOrange, Colours::black);
         streamBtn.onClick = [this] {

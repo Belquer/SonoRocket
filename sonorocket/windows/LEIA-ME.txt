@@ -57,6 +57,11 @@ VÍDEO (substitui o Google Meet)
    O áudio continua pelo SonoRocket (mix + talkback); a página de vídeo não tem som.
 
 SE ALGO NÃO FUNCIONAR
+- "rocket-relay não encontrado" / "falta o rocket-relay.exe": o SonoRocket.exe foi aberto
+  de dentro do zip, ou o antivírus removeu o rocket-relay.exe. Extraia o zip inteiro
+  (botão direito › Extrair Tudo) e abra o SonoRocket.exe da pasta extraída; ela tem que ter
+  SonoRocket.exe, rocket-relay.exe e cloudflared.exe. Se o rocket-relay.exe sumir de novo:
+  Segurança do Windows › Proteção contra vírus › Histórico de proteção › Restaurar/Permitir.
 - "sem sinal na entrada": a entrada escolhida não está recebendo som. Confira o cabo
   e se é a entrada certa.
 - O link não aparece: confira se o computador está na internet.
