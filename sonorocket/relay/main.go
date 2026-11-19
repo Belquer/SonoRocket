@@ -36,7 +36,8 @@ import (
 )
 
 // relayVersion is logged at startup and reported in /status ("version").
-const relayVersion = "0.2.28"
+// Release builds stamp the release number in: -ldflags "-X main.relayVersion=0.2.N".
+var relayVersion = "0.2.28-dev"
 
 //go:embed public
 var publicFS embed.FS
