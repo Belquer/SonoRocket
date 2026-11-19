@@ -39,6 +39,11 @@ jobs:
         run: brew install ninja
 
       - name: Build plugin (VST3 + AU, universal)
+        # JUCE builds its juceaide helper in a separate CMake run that doesn't inherit our
+        # 10.10 target; on the macOS 15 SDK it then defaults to 15 and CGWindowListCreateImage
+        # is a hard error. The env var only reaches that helper (never shipped).
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUniversalBinary=ON
           cmake --build build --target SonoBus_VST3 SonoBus_AU -j "$(sysctl -n hw.ncpu)"
@@ -51,8 +56,8 @@ jobs:
       - name: Build relay (universal)
         working-directory: sonorocket/relay
         run: |
-          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.lsProductID=${{ vars.LS_PRODUCT_ID }} -X main.lsStoreID=${{ vars.LS_STORE_ID }} -X 'main.buyURL=${{ vars.BUY_URL || 'https://github.com/Belquer/SonoRocket#comprar' }}'" -o /tmp/relay-arm64 .
-          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.lsProductID=${{ vars.LS_PRODUCT_ID }} -X main.lsStoreID=${{ vars.LS_STORE_ID }} -X 'main.buyURL=${{ vars.BUY_URL || 'https://github.com/Belquer/SonoRocket#comprar' }}'" -o /tmp/relay-amd64 .
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.relayVersion=${{ steps.v.outputs.version }} -X main.lsProductID=${{ vars.LS_PRODUCT_ID }} -X main.lsStoreID=${{ vars.LS_STORE_ID }} -X 'main.buyURL=${{ vars.BUY_URL || 'https://github.com/Belquer/SonoRocket#comprar' }}'" -o /tmp/relay-arm64 .
+          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.relayVersion=${{ steps.v.outputs.version }} -X main.lsProductID=${{ vars.LS_PRODUCT_ID }} -X main.lsStoreID=${{ vars.LS_STORE_ID }} -X 'main.buyURL=${{ vars.BUY_URL || 'https://github.com/Belquer/SonoRocket#comprar' }}'" -o /tmp/relay-amd64 .
           lipo -create /tmp/relay-arm64 /tmp/relay-amd64 -output /tmp/rocket-relay
 
       - name: Fetch cloudflared (universal)
@@ -128,7 +133,7 @@ jobs:
       - name: Build relay
         shell: bash
         working-directory: sonorocket/relay
-        run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.lsProductID=${{ vars.LS_PRODUCT_ID }} -X main.lsStoreID=${{ vars.LS_STORE_ID }} -X 'main.buyURL=${{ vars.BUY_URL || 'https://github.com/Belquer/SonoRocket#comprar' }}'" -o "$RUNNER_TEMP/rocket-relay.exe" .
+        run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.relayVersion=${{ steps.v.outputs.version }} -X main.lsProductID=${{ vars.LS_PRODUCT_ID }} -X main.lsStoreID=${{ vars.LS_STORE_ID }} -X 'main.buyURL=${{ vars.BUY_URL || 'https://github.com/Belquer/SonoRocket#comprar' }}'" -o "$RUNNER_TEMP/rocket-relay.exe" .
 
       - name: Package
         shell: bash
