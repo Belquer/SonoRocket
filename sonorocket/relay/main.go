@@ -35,6 +35,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// relayVersion is logged at startup and reported in /status ("version").
+const relayVersion = "0.2.27"
+
 //go:embed public
 var publicFS embed.FS
 
@@ -339,6 +342,18 @@ func runTunnel(bin string, stop <-chan struct{}) {
 			setPublicURL("", "error")
 			return
 		}
+		// the watchdog kills this cloudflared when Cloudflare has dropped its hostname;
+		// the loop below then restarts it, which brings a fresh link
+		exited := make(chan struct{})
+		var watchOnce sync.Once
+		killTunnel := func() {
+			stopChild(cmd)
+			select {
+			case <-exited:
+			case <-time.After(3 * time.Second):
+				_ = cmd.Process.Kill()
+			}
+		}
 		go func() {
 			// cloudflared prints the URL before the edge connection exists;
 			// only publish it once a connection is registered.
@@ -353,12 +368,13 @@ func runTunnel(bin string, stop <-chan struct{}) {
 					log.Printf("tunnel up: %s", pending)
 					setPublicURL(pending, "up")
 					backoff = time.Second
+					watchOnce.Do(func() { go watchTunnel(pending, killTunnel, exited) })
 					pending = ""
 				}
 			}
 		}()
 		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
+		go func() { done <- cmd.Wait(); close(exited) }()
 		select {
 		case <-stop:
 			stopChild(cmd)
@@ -383,9 +399,96 @@ func runTunnel(bin string, stop <-chan struct{}) {
 	}
 }
 
+// ---------------------------------------------------------------- tunnel watchdog
+
+// A quick tunnel can die on Cloudflare's side (the Mac slept, the network changed) while
+// cloudflared keeps running and reconnecting under the same hostname. The link then
+// answers "Error 1033" forever and the app keeps showing it. So the relay fetches its own
+// public link now and then; when Cloudflare answers that the tunnel is gone several times
+// in a row, it restarts cloudflared, which brings a new hostname to the app.
+//
+// Only a definite answer from Cloudflare counts (HTTP 530, or someone else's page at our
+// hostname). A probe that cannot get out at all (DNS filter, no internet, timeout) never
+// restarts a tunnel that may still be working for the listeners.
+var (
+	probeID     = randomProbeID()
+	probeGrace  = 20 * time.Second // new hostnames take a moment to resolve
+	probeEvery  = 30 * time.Second
+	probeMisses = 3
+	probeClient = &http.Client{Timeout: 10 * time.Second}
+)
+
+func randomProbeID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("%x", b)
+}
+
+type probeResult int
+
+const (
+	probeOK      probeResult = iota
+	probeDead                // Cloudflare says the tunnel behind this hostname is gone
+	probeUnknown             // could not tell (network error, timeout, other status)
+)
+
+func probeTunnel(base string) (probeResult, string) {
+	resp, err := probeClient.Get(base + "/tunnel-probe")
+	if err != nil {
+		return probeUnknown, err.Error()
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	switch {
+	case resp.StatusCode == http.StatusOK && string(b) == probeID:
+		return probeOK, ""
+	case resp.StatusCode == 530: // Cloudflare's "origin unreachable": error 1033 and friends
+		return probeDead, "HTTP 530"
+	case resp.StatusCode == http.StatusOK:
+		return probeDead, "another relay answers at this hostname"
+	default:
+		return probeUnknown, resp.Status
+	}
+}
+
+// watchTunnel probes base until stop closes; after probeMisses dead answers in a row it
+// calls kill and returns.
+func watchTunnel(base string, kill func(), stop <-chan struct{}) {
+	misses := 0
+	t := time.NewTimer(probeGrace)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+		}
+		res, why := probeTunnel(base)
+		switch res {
+		case probeOK:
+			if misses > 0 {
+				log.Printf("tunnel probe: %s answers again", base)
+			}
+			misses = 0
+		case probeDead:
+			misses++
+			log.Printf("tunnel probe: %s is gone at Cloudflare (%s, %d/%d)", base, why, misses, probeMisses)
+			if misses >= probeMisses {
+				log.Printf("tunnel probe: restarting cloudflared for a new link")
+				kill()
+				return
+			}
+		case probeUnknown:
+			log.Printf("tunnel probe: could not check %s (%s), leaving it alone", base, why)
+		}
+		t.Reset(probeEvery)
+	}
+}
+
 // ---------------------------------------------------------------- status
 
 type status struct {
+	Version      string `json:"version"`
 	Room         string `json:"room"`
 	Link         string `json:"link"`
 	Tunnel       string `json:"tunnel"`
@@ -400,7 +503,7 @@ type status struct {
 func getStatus() status {
 	r := getRoom(*defaultRoom)
 	r.mu.Lock()
-	st := status{Room: r.name, Link: linkFor(r.name), SenderOnline: r.sender != nil, Listeners: len(r.listeners)}
+	st := status{Version: relayVersion, Room: r.name, Link: linkFor(r.name), SenderOnline: r.sender != nil, Listeners: len(r.listeners)}
 	if r.format != nil {
 		st.Format = *r.format
 	}
@@ -924,6 +1027,7 @@ func main() {
 	mux.Handle("/", noCache(http.FileServer(http.FS(sub))))
 	mux.HandleFunc("/ws", handleWS)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
+	mux.HandleFunc("/tunnel-probe", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, probeID) })
 	quit := make(chan struct{})
 	var quitOnce sync.Once
 	mux.HandleFunc("/quit", func(w http.ResponseWriter, r *http.Request) {
@@ -977,6 +1081,7 @@ func main() {
 		close(tunnelDone)
 	}
 
+	log.Printf("rocket-relay v%s", relayVersion)
 	log.Printf("senders tcp %s%s · listeners %s · room %s", *senderAddr, map[bool]string{true: " (key required)", false: ""}[*relayKey != ""], currentBase(), *defaultRoom)
 	writeStatus()
 

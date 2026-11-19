@@ -41,7 +41,9 @@ test: `sonorocket/test/talkback/run.sh`.
 2. Pro Tools: Master Fader, last insert → Blue Cat PatchWork → **SonoRocket**. Other DAWs: SonoRocket directly.
 3. The app window shows the link. **Mandar no WhatsApp** or **Copiar link**. Done.
 
-The plugin streams by default to the app on the same Mac (room "auto"), and the app's relay opens a Cloudflare quick tunnel and pushes the public link back to the plugin. Nobody types a URL. `sonorocket/macos/COMO-USAR.md` is the one-page guide for the producer.
+The plugin streams by default to the app on the same Mac (room "auto"), and the app's relay opens a Cloudflare quick tunnel and pushes the public link back to the plugin. Nobody types a URL.
+
+Quick-tunnel links are temporary: they die when the app quits, and Cloudflare can also drop one while the app is still open (after the Mac sleeps or the network changes), which shows the listener "Error 1033". The relay (v0.2.27+) checks its own public link every 30 s. When Cloudflare answers three times in a row that the tunnel is gone (HTTP 530), it restarts the tunnel and the app shows the new link. A check that can't get out at all (no internet, DNS filter) never restarts it. Send the new link; the old one never comes back. `relay.log` (next to the app's settings) records every check that failed and every restart; `/status` reports the relay `version`. `sonorocket/macos/COMO-USAR.md` is the one-page guide for the producer.
 
 ## Relay on a server (fixed link)
 
